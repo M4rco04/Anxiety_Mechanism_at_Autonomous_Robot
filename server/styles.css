@@ -1,0 +1,60 @@
+:root {
+  color-scheme: dark;
+  font-family: system-ui, sans-serif;
+  background: #090b10;
+  color: #f5f0e8;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  overflow: hidden;
+}
+
+.toolbar {
+  position: fixed;
+  z-index: 1;
+  inset: 0 0 auto;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 1.25rem;
+  background: linear-gradient(#090b10, rgba(9, 11, 16, 0.7), transparent);
+  pointer-events: none;
+}
+
+h1,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 1.1rem;
+}
+
+#status,
+.controls {
+  color: #b8c0cc;
+  font-size: 0.85rem;
+}
+
+.controls {
+  text-align: right;
+}
+
+#scene-container {
+  width: 100%;
+  height: 100%;
+}
+
+canvas {
+  display: block;
+}
