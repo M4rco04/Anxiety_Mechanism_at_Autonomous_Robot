@@ -3,7 +3,6 @@ import random
 import numpy as np
 from perlin_noise import PerlinNoise
 
-# Import klas terenu z sąsiedniego pliku
 from src.environment.terrain import (
     SafeRegolith, Boulders, LooseSand,
     Ventifacts, SteepSlope, DeepShadow, DustStorm

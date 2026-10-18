@@ -19,10 +19,10 @@ def visualize_map():
 
     legend_labels = {
         "#d2b48c": "Bezpieczny regolit",
-        "#4d4d4d": "Duże głazy (Blokada)",
+        "#4d4d4d": "Duże głazy",
         "#e6cc80": "Sypki piasek",
-        "#8b4513": "Ostre skały (Klaster)",
-        "#ff6666": "Strome zbocza (>30°)",
+        "#8b4513": "Ostre skały",
+        "#ff6666": "Strome zbocza",
         "#1a1a1a": "Głębokie cienie",
         "#b38b6d": "Burza pyłowa"
     }
