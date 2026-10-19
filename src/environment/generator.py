@@ -56,24 +56,22 @@ class MarsMapGenerator:
                 z = elevation_map[x][y]
                 slope = slope_map[x][y]
 
-                # Obliczanie dodatkowych warstw szumu
                 sand_noise = self.noise2([x / self.width, y / self.height])
                 dust_noise = self.noise3([x / self.width, y / self.height])
                 rock_noise = self.noise4([x / self.width, y / self.height])
 
-                # KLASYFIKATOR TERENU
                 if slope > 30.0:
                     patch = SteepSlope(uid_counter, model, z, slope)
                 elif z > 0.6:
-                    patch = Boulders(uid_counter, model, z, slope)
+                    boulder_slope = slope + random.uniform(20.0, 45.0)
+                    boulder_slope = min(boulder_slope, 90.0) 
+                    
+                    patch = Boulders(uid_counter, model, z, boulder_slope)
                 elif z < -0.4:
                     patch = DeepShadow(uid_counter, model, z, slope)
                 elif dust_noise > 0.25:
-                    # Szum > 0.25 tworzy zbite chmury. Przesłania inne tereny na płaskim.
                     patch = DustStorm(uid_counter, model, z, slope)
                 elif rock_noise > 0.2 and slope < 15.0:
-                    # Szum na 12 oktawach > 0.2 stworzy gęste klastry wielkości 3-5 heksagonów.
-                    # Zwiększyliśmy ilość względem starego kodu i wyrzuciliśmy random().
                     patch = Ventifacts(uid_counter, model, z, slope)
                 elif sand_noise > 0.2:
                     patch = LooseSand(uid_counter, model, z, slope)
