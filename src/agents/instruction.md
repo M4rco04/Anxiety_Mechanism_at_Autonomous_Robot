@@ -1,35 +1,48 @@
-**1. Moduł Sensoryczny (Percepcja Środowiska)**
+**1. Parametry Wewnętrzne Łazika (Stan Agenta)**
+Każdy obiekt łazika (`Pioneer3DXAgent`) musi posiadać zainicjalizowane następujące parametry śledzące jego stan fizyczny i psychologiczny:
+
+* `battery` (float): Aktualny poziom energii (startowo 100.0).
+* `battery_prev` (float): Poziom energii z poprzedniego kroku symulacji (niezbędny do wyliczania zmiennej $\Delta B$ w homeostacie).
+* `current_speed` (float): Rzeczywista prędkość przemieszczania się ($V_{akt}$).
+* `target_speed` (float): Prędkość zadana przez systemy sterowania ($V_{zad}$), służy do wyliczania uślizgu na piasku.
+* `wheel_condition` (float): Stan techniczny kół/zawieszenia ($C_{kola}$), wartość od 100.0 (idealny) do 0.0 (zniszczone).
+* `hull_condition` (float): Stan techniczny kadłuba ($C_{kadlub}$), wartość od 100.0 (idealny) do 0.0 (zniszczony).
+* `stress_level` (float): Bieżący poziom napięcia w module homeostatu (startowo 0.0).
+
+
+* `anxiety_memory` (set): Pamięć krótkotrwała/Baza Traum przechowująca niebezpieczne sygnatury wizualne.
+
+
+* `vision_range` (int): Aktualny zasięg w heksagonach dla kamer RGB (startowo 3), modyfikowany przez burze pyłowe.
+
+
+* `shadow_exposure_time` (int): Licznik tur spędzonych nieprzerwanie w obszarze `DeepShadow`.
+* `dust_exposure_time` (int): Licznik tur spędzonych nieprzerwanie w obszarze `DustStorm`.
+* `gyro_alarm` (bool): Flaga włączająca się, gdy nachylenie terenu stwarza ryzyko wywrotki.
+
+
+* `is_overturned` (bool): Flaga oznaczająca fizyczną wywrotkę na stromym zboczu.
+
+
+* `is_destroyed` (bool): Flaga oznaczająca całkowite zatrzymanie i wyłączenie łazika z dalszej symulacji w wyniku krytycznych uszkodzeń.
+
+**2. Moduł Sensoryczny (Percepcja Środowiska)**
 Zaimplementuj dwa odrębne systemy wizyjne symulujące dysonans sensoryczny:
 
 * `read_lidar()`: Skanuje teren i zwraca listę współrzędnych fizycznych przeszkód blokujących ruch (np. duże głazy). Ignoruje podłoże płaskie i jego teksturę.
 
 
-* `read_rgb_cameras()`: Zwraca sygnaturę wizualną w postaci krotki wartości kolorów `(R, G, B)` z heksagonów znajdujących się przed łazikiem. Zasięg działania tej funkcji (ilość heksagonów do przodu) jest definiowany przez zmienną całkowitą `vision_range` (domyślnie 3), która jest dynamicznie redukowana przez zjawiska takie jak burze pyłowe.
+* `read_rgb_cameras()`: Zwraca sygnaturę wizualną w postaci krotki wartości kolorów `(R, G, B)` z heksagonów znajdujących się przed łazikiem. Zasięg działania jest limitowany przez `vision_range`.
 
 
 
-**2. Cybernetyczny Umysł i Emocje (Homeostat i Baza Traum)**
+**3. Cybernetyczny Umysł i Emocje (Homeostat i Baza Traum)**
 Rdzeń mechanizmu lęku warunkowego:
-
-* `anxiety_memory`: Struktura danych typu `set` (zbiór) przechowująca zapisane sygnatury wizualne `(R, G, B)` podłoża, które wywołały krytyczny stres.
-
 
 * `update_homeostat(delta_battery, target_speed, current_speed, hull_condition, wheel_condition, current_slope)`: Funkcja monitorująca spadek wydajności i uszkodzenia. Aktualizuje zmienną `stress_level` zgodnie ze zdefiniowanym wzorem matematycznym.
 
 
 * `learn_fear(signature)`: Funkcja wyzwalana natychmiast, gdy `stress_level` przekroczy próg $S_{crit} = 75.0$. Zapisuje przekazaną krotkę `(R, G, B)` do `anxiety_memory` (wdrukowanie).
-
-
-
-**3. Algorytmy Nawigacyjne (Ruch i Reakcja)**
-
-* `_move_standard()`: Algorytm reaktywny. Omija przeszkody wykryte przez `read_lidar()`, ale nie analizuje tekstury, przez co ignoruje sypki piasek lub ostre skały.
-
-
-* `_move_fuzzy()`: Kontroler rozmyty (Mamdani/Sugeno) przetwarzający dystans i szorstkość terenu na parametry wyjściowe napędu: prędkość i kąt skrętu.
-
-
-* `_move_emotional()`: Algorytm ucieczki. Działa w czasie rzeczywistym, sprawdzając, czy dla odczytanej krotki `(R, G, B)` z kamer, dystans euklidesowy $\sqrt{(R_1-R_2)^2 + (G_1-G_2)^2 + (B_1-B_2)^2}$ do jakiejkolwiek sygnatury w `anxiety_memory` jest mniejszy niż próg tolerancji (np. 15.0). Wykrycie podobieństwa wyzwala manewr wycofania przed fizycznym kontaktem z zagrożeniem.
 
 
 
@@ -43,21 +56,16 @@ Rdzeń mechanizmu lęku warunkowego:
 
 
 **5. Główna Pętla Decyzyjna (Metoda `step`)**
-Każdy agent łazika wykonuje operacje w ścisłej kolejności:
+Każdy agent łazika wykonuje operacje w ścisłej kolejności, integrując się z zewnętrznym modułem nawigacji:
 
-1. Pobranie danych z `read_lidar()` oraz `read_rgb_cameras()`.
-2. Porównanie odczytu kamer z `anxiety_memory`. Jeśli próg dystansu euklidesowego kolorów jest przekroczony, wykonaj `_move_emotional()`.
-
-
-3. Jeśli sygnatury są bezpieczne, wykonaj `_move_fuzzy()` lub `_move_standard()` wybierając kolejny heksagon.
-
-
-4. Zresetowanie liczników środowiskowych łazika (np. czasu spędzonego w cieniu), jeśli zmieniono heksagon na inny typ.
-5. Wywołanie na łaziku efektów środowiskowych obecnego heksagonu (`current_patch.apply_effect(self)`).
-6. Przeliczenie napięcia w systemie wywołując `update_homeostat(...)` z nowymi parametrami fizycznymi.
+1. Pobranie danych sensorycznych przez `read_lidar()` oraz `read_rgb_cameras()`.
+2. Przekazanie danych z sensorów oraz `anxiety_memory` do zewnętrznego modułu nawigacji i wykonanie przemieszczenia na siatce (właściwe algorytmy ruchu implementuje oddzielny zespół).
+3. Zresetowanie liczników środowiskowych (`shadow_exposure_time`, `dust_exposure_time`), jeśli po ruchu łazik zmienił typ heksagonu na bezpieczny.
+4. Wywołanie na łaziku efektów środowiskowych obecnego heksagonu (np. `current_patch.apply_effect(self)`).
+5. Przeliczenie napięcia w systemie poprzez wywołanie `update_homeostat(...)` z nowymi parametrami fizycznymi.
 
 
-7. Jeśli `stress_level` $\ge S_{crit}$, wykonaj `learn_fear(current_signature)` oraz `broadcast_danger(current_signature, self.pos)`.
+6. Jeśli wyliczony `stress_level` $\ge S_{crit}$, wywołanie `learn_fear(current_signature)` oraz `broadcast_danger(current_signature, self.pos)`.
 
 
 
@@ -70,7 +78,7 @@ Wzór na całkowity poziom stresu z wygładzaniem:
 
 $$S_{calkowity} = \beta \cdot S_{poprzedni} + (1 - \beta) \cdot S_{chwilowy}$$
 
-Zalecane stałe konfiguracyjne do inicjalizacji w pliku `config.py`:
+Zalecane stałe konfiguracyjne do inicjalizacji w module konfiguracyjnym:
 
 * $w_1 = 5.0$ (Waga skoków poboru prądu)
 * $w_2 = 15.0$ (Waga uślizgu kół)
