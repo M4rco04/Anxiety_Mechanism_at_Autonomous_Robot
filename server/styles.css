@@ -58,3 +58,38 @@ h1 {
 canvas {
   display: block;
 }
+
+.terrain-tooltip {
+  position: fixed;
+  z-index: 2;
+  display: flex;
+  max-width: 280px;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid rgba(224, 168, 113, 0.55);
+  border-radius: 0.4rem;
+  background: rgba(20, 15, 14, 0.94);
+  box-shadow: 0 0.35rem 1rem rgba(0, 0, 0, 0.45);
+  color: #f5f0e8;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.terrain-tooltip-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.terrain-tooltip strong {
+  color: #f2c28f;
+  font-size: 0.9rem;
+}
+
+.terrain-tooltip span {
+  color: #e4ddd3;
+}
