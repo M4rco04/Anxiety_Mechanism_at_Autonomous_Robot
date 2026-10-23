@@ -1,0 +1,19 @@
+[project]
+name = "anxiety-mechanism-at-autonomous-robot"
+version = "0.1.0"
+description = "Symulacja mechanizmu lęku warunkowego u autonomicznych łazików marsjańskich (Mesa + Perlin Noise)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "mesa<3.0",
+    "numpy>=1.24.0",
+    "pandas>=2.0.0",
+    "matplotlib>=3.7.0",
+    "perlin-noise",
+    "networkx>=3.1",
+]
+
+[tool.uv]
+# Projekt jest uruchamiany jako skrypt `show_map.py` z importami `src.*`,
+# dlatego nie budujemy go jako paczki instalowalnej.
+package = false

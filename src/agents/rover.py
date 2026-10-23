@@ -8,7 +8,10 @@ class Pioneer3DXAgent(mesa.Agent):
         # Parametry witalne i homeostat
         self.battery = 100.0
         self.wheel_condition = 100.0
+        self.hull_condition = 100.0
         self.stress_level = 0.0
+        self.shadow_exposure_time = 0
+        self.dust_exposure_time = 0
 
         # Sensory i ruch
         self.base_speed = 1.0
