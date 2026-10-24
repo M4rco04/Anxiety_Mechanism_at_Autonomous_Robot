@@ -1,7 +1,8 @@
 /**
- * Browser application bootstrap for the terrain viewer.
+ * Browser application bootstrap for the terrain + live rover viewer.
  */
 import { TerrainScene } from "./scene/TerrainScene.js";
+import { SimulationClient } from "./simulation/SimulationClient.js";
 
 /**
  * Loads terrain JSON from the Python server.
@@ -17,27 +18,23 @@ async function loadTerrain() {
 }
 
 /**
- * Coordinates terrain loading and scene startup.
+ * Coordinates terrain loading, scene startup and live simulation.
  */
 class TerrainApplication {
-  /**
-   * Finds the page elements used by the application.
-   */
   constructor() {
     this.container = document.querySelector("#scene-container");
     this.status = document.querySelector("#status");
   }
 
-  /**
-   * Starts the browser application.
-   *
-   * @returns {Promise<void>}
-   */
   async start() {
     try {
       const terrain = await loadTerrain();
-      await new TerrainScene(this.container, terrain).start();
-      this.status.textContent = `${terrain.width} × ${terrain.height} grid · ${terrain.cells.length} cells`;
+      const scene = new TerrainScene(this.container, terrain);
+      await scene.start();
+      this.scene = scene;
+      this.simulation = new SimulationClient(scene);
+      await this.simulation.start();
+      this.status.textContent = `${terrain.width} × ${terrain.height} grid · ${terrain.cells.length} cells · live rover mission`;
       console.log("Generated terrain:", terrain);
     } catch (error) {
       this.status.textContent = "Unable to load terrain";

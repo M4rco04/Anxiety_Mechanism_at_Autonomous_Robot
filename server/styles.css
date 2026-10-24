@@ -93,3 +93,248 @@ canvas {
 .terrain-tooltip span {
   color: #e4ddd3;
 }
+
+/* ------------------------------------------------------------------ */
+/* Live rover telemetry and playback                                   */
+/* ------------------------------------------------------------------ */
+.simulation-panel {
+  position: fixed;
+  z-index: 3;
+  right: 1rem;
+  bottom: 1rem;
+  display: flex;
+  width: min(22rem, calc(100vw - 2rem));
+  max-height: min(42rem, calc(100vh - 6rem));
+  flex-direction: column;
+  gap: 0.65rem;
+  overflow: auto;
+  padding: 0.85rem;
+  border: 1px solid rgba(224, 168, 113, 0.38);
+  border-radius: 0.55rem;
+  background: rgba(13, 15, 21, 0.93);
+  box-shadow: 0 0.5rem 1.8rem rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(6px);
+}
+
+.simulation-panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.simulation-eyebrow {
+  display: block;
+  color: #b8c0cc;
+  font-size: 0.62rem;
+  letter-spacing: 0.12em;
+}
+
+.simulation-panel-header strong {
+  color: #f2c28f;
+  font-size: 1.05rem;
+}
+
+.simulation-status {
+  padding: 0.18rem 0.45rem;
+  border: 1px solid rgba(114, 224, 176, 0.35);
+  border-radius: 999px;
+  color: #72e0b0;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+}
+
+.simulation-badge {
+  padding: 0.32rem 0.5rem;
+  border: 1px solid rgba(114, 224, 176, 0.35);
+  border-radius: 0.35rem;
+  color: #72e0b0;
+  background: rgba(114, 224, 176, 0.08);
+  font-size: 0.64rem;
+  letter-spacing: 0.04em;
+}
+
+.simulation-badge-warning {
+  border-color: rgba(255, 179, 71, 0.5);
+  color: #ffb347;
+  background: rgba(255, 179, 71, 0.08);
+}
+
+.simulation-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.38rem;
+}
+
+.simulation-controls button,
+.simulation-speed select {
+  border: 1px solid rgba(224, 168, 113, 0.3);
+  border-radius: 0.3rem;
+  background: #191d25;
+  color: #f5f0e8;
+  font: inherit;
+  font-size: 0.72rem;
+  padding: 0.35rem 0.55rem;
+  cursor: pointer;
+}
+
+.simulation-controls button:hover:not(:disabled),
+.simulation-speed select:hover {
+  border-color: #f2c28f;
+  color: #f2c28f;
+}
+
+.simulation-controls button:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.simulation-speed {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: #b8c0cc;
+  font-size: 0.68rem;
+}
+
+.simulation-rover-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.42rem;
+}
+
+.rover-row {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.48rem 0.55rem;
+  border: 1px solid rgba(184, 192, 204, 0.16);
+  border-radius: 0.35rem;
+  background: #141820;
+  color: #f5f0e8;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.rover-row:hover,
+.rover-row.selected {
+  border-color: rgba(242, 194, 143, 0.65);
+  background: #1b2029;
+}
+
+.rover-row-head {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.rover-dot {
+  width: 0.48rem;
+  height: 0.48rem;
+  border-radius: 50%;
+  background: #62ff9a;
+  box-shadow: 0 0 0.35rem rgba(98, 255, 154, 0.7);
+}
+
+.rover-status {
+  margin-left: auto;
+  color: #b8c0cc;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+}
+
+.rover-status[data-status="destroyed"],
+.rover-status[data-status="overturned"] {
+  color: #ff6b5f;
+}
+
+.rover-fear {
+  color: #f2a65a;
+  font-size: 0.62rem;
+}
+
+.telemetry-line {
+  display: grid;
+  grid-template-columns: 2.2rem 1fr 2.1rem;
+  align-items: center;
+  gap: 0.35rem;
+  color: #8f9aa8;
+  font-size: 0.6rem;
+}
+
+.telemetry-line em {
+  color: #d7dde5;
+  font-style: normal;
+  text-align: right;
+}
+
+.telemetry-track {
+  display: block;
+  height: 0.3rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #29303a;
+}
+
+.telemetry-track b {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: #62ff9a;
+  transition: width 220ms ease, background 220ms ease;
+}
+
+.telemetry-track b[data-level="warn"] {
+  background: #ffb347;
+}
+
+.telemetry-track b[data-level="bad"] {
+  background: #ff5a4a;
+}
+
+.telemetry-mini {
+  grid-template-columns: 2.2rem auto 2.2rem auto;
+  gap: 0.25rem;
+}
+
+.telemetry-mini b {
+  color: #d7dde5;
+  font-weight: 500;
+}
+
+.simulation-panel-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.4rem;
+  color: #8f9aa8;
+  font-size: 0.62rem;
+}
+
+.simulation-error {
+  color: #ff8a7a;
+  font-size: 0.68rem;
+  line-height: 1.35;
+}
+
+.rover-tooltip {
+  width: 18rem;
+}
+
+.rover-tooltip .rover-action {
+  color: #f2c28f;
+  font-size: 0.72rem;
+}
+
+@media (max-width: 720px) {
+  .simulation-panel {
+    right: 0.5rem;
+    bottom: 0.5rem;
+    width: min(20rem, calc(100vw - 1rem));
+    max-height: 46vh;
+  }
+}

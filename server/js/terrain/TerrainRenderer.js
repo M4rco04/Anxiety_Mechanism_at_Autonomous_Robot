@@ -13,6 +13,18 @@ export class TerrainRenderer {
     this.dustStorm = new DustStormEffect(assets.dustStorm);
     this.rocks = new RockCluster(assets);
     this.cubes = [];
+    this.cellHeights = new Map();
+  }
+
+  /**
+   * Returns the top surface height of a terrain cube.
+   *
+   * @param {number} x Grid x coordinate.
+   * @param {number} y Grid y coordinate.
+   * @returns {number} Cube top height in world units.
+   */
+  heightAt(x, y) {
+    return this.cellHeights.get(`${x},${y}`) ?? 0.15;
   }
 
   /**
@@ -26,6 +38,7 @@ export class TerrainRenderer {
     const group = new THREE.Group();
     for (const cell of terrain.cells) {
       const height = 0.15 + ((cell.elevation - minimum) / range) * 2.5;
+      this.cellHeights.set(`${cell.x},${cell.y}`, height);
       const cube = this.grid.createCube(cell, height);
       group.add(cube);
       this.cubes.push(cube);

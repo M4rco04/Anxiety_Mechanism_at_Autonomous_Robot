@@ -205,6 +205,9 @@ cython_debug/
 # Temporary file for partial code execution
 tempCodeRunnerFile.py
 
+# Generated experiment artifacts (CSV/JSON/PNG/Markdown reports)
+results/
+
 # Ruff stuff:
 .ruff_cache/
 
@@ -218,3 +221,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# uv
+.uv/
+.uv-cache/

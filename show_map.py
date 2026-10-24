@@ -1,7 +1,14 @@
+import sys
+
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import matplotlib.colors as mcolors
 import numpy as np
+
+# Konsola Windows domyślnie używa cp1252 - polskie znaki w print() wywalają UnicodeEncodeError.
+for _stream in (sys.stdout, sys.stderr):
+    if _stream is not None and hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 # Importujemy nasz model
 from src.model.model import MarsSimulation

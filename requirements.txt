@@ -1,6 +1,12 @@
+# UWAGA: źródłem prawdy dla zależności jest pyproject.toml (wersje zablokowane w uv.lock).
+# Aktualizacja: `uv add <pakiet>`, instalacja: `uv sync`.
+#
+# Ten plik pozostał wyłącznie dla kompatybilności z narzędziami, które nie znają uv
+# (lista jest utrzymywana ręcznie na podstawie pyproject.toml).
 mesa<3.0
 numpy>=1.24.0
 pandas>=2.0.0
 matplotlib>=3.7.0
 perlin-noise
 networkx>=3.1
+scipy>=1.10.0
