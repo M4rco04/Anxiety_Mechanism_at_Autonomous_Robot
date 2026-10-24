@@ -1,5 +1,17 @@
 # Anxiety Mechanism at Autonomous Robot
 
+## Running the terrain web server
+
+From the project root, install the dependencies and start the server:
+
+```text
+python -m pip install -r requirements.txt
+python -m server.server
+```
+
+Open `http://127.0.0.1:8000` in a browser. The page requests a newly generated
+terrain grid and logs the JSON response in the browser developer console.
+
 
 ## 📂 Project Structure
 
@@ -67,4 +79,3 @@ The environment on a 2D MultiGrid represents a diverse Martian surface procedura
 * **Steep crater slopes:** Pose a risk of overturning the rover.
 * **Deep shadows:** Accelerate battery discharge.
 * **Dust storms:** Temporarily limit RGB camera visibility.
-
