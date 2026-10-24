@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mars Terrain Explorer</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"
+        }
+      }
+    </script>
+</head>
+
+<body>
+  <header class="toolbar">
+    <div>
+      <p id="status">Loading terrain...</p>
+    </div>
+    <p class="controls">Drag to orbit · Scroll to zoom · Right-drag to pan</p>
+  </header>
+  <main id="scene-container" aria-label="3D terrain visualization"></main>
+  <script type="module" src="/js/main.js"></script>
+</body>
+
+</html>

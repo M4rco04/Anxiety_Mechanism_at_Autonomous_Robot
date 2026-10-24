@@ -1,37 +1,18 @@
-# Anxiety Mechanism at Autonomous Robot
+﻿# Anxiety Mechanism at Autonomous Robot
 
-## 🚀 Szybki start (uv)
+## 🚀 Getting Started (uv)
 
-Projekt używa [uv](https://docs.astral.sh/uv/) do zarządzania zależnościami i środowiskiem wirtualnym.
-Nie trzeba ręcznie tworzyć venv ani instalować pakietów przez `pip`.
+The project uses [uv](https://docs.astral.sh/uv/). Dependencies are installed automatically on the first run.
 
 ```bash
-# 1. Instalacja zależności (tworzy .venv na podstawie pyproject.toml + uv.lock)
-uv sync
-
-# 2. Uruchomienie wizualizacji mapy terenu
 uv run show_map.py
 ```
+Terrain map visualization in Matplotlib.
 
-Wymagania: zainstalowany `uv` (`winget install astral-sh.uv`, `brew install uv` lub
-`pip install uv`). Jeśli nowa wersja Pythona nie jest dostępna lokalnie, `uv` pobierze ją
-automatycznie zgodnie z `.python-version`.
-
-Dodatkowe komendy:
-
-| Komenda | Opis |
-| --- | --- |
-| `uv sync` | Instaluje/aktualizuje zależności zgodnie z `uv.lock` |
-| `uv add <pakiet>` | Dodaje zależność do `pyproject.toml` i aktualizuje `uv.lock` |
-| `uv run <skrypt.py>` | Uruchamia skrypt w środowisku projektu |
-| `uv lock --upgrade` | Odświeża zablokowane wersje pakietów |
-
-Pliki zarządzania zależnościami:
-
-* `pyproject.toml` – źródło prawdy dla zależności i konfiguracji projektu,
-* `uv.lock` – zablokowane, dokładne wersje (należy commitować),
-* `.python-version` – sugerowana wersja interpretera Python,
-* `requirements.txt` – pozostawiony tylko dla kompatybilności, nie jest używany przez `uv`.
+```bash
+uv run server
+```
+Web server with a 3D terrain visualization, available at `http://127.0.0.1:8000`.
 
 ## 📂 Project Structure
 
@@ -99,4 +80,3 @@ The environment on a 2D MultiGrid represents a diverse Martian surface procedura
 * **Steep crater slopes:** Pose a risk of overturning the rover.
 * **Deep shadows:** Accelerate battery discharge.
 * **Dust storms:** Temporarily limit RGB camera visibility.
-
