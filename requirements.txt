@@ -9,3 +9,4 @@ pandas>=2.0.0
 matplotlib>=3.7.0
 perlin-noise
 networkx>=3.1
+scipy>=1.10.0

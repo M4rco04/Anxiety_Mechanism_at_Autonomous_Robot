@@ -11,11 +11,24 @@ dependencies = [
     "matplotlib>=3.7.0",
     "perlin-noise",
     "networkx>=3.1",
+    "scipy>=1.10.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.6.0",
 ]
 
 [project.scripts]
-# `uv run server` -> serwer WWW z wizualizacją 3D terenu
+# `uv run server` -> interactive live 3D terrain + rover demo
 server = "server.server:main"
+# `uv run simulate` -> one complete headless episode
+simulate = "root.run:main"
+# `uv run batch-run` -> many paired episodes and a statistical report
+batch-run = "root.batch_run:main"
+# `uv run show_map` -> terrain-only Matplotlib preview
+show_map = "show_map:visualize_map"
 
 [build-system]
 requires = ["hatchling"]
@@ -23,5 +36,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 # Projekt nie jest biblioteką - instalowane są tylko pakiety potrzebne
-# do działania skryptów (importy `src.*` i `server.*`).
-packages = ["src", "server"]
+# do działania skryptów (importy `src.*`, `server.*`, `config.*`, `root.*`).
+packages = ["src", "server", "config", "root"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"show_map.py" = "show_map.py"
