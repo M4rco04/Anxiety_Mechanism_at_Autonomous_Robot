@@ -13,10 +13,12 @@ from src.navigation.types import NavigationDecision
 from tests.conftest import layout, make_model
 
 
-def test_unimplemented_scientific_modes_fail_loudly():
+def test_scientific_modes_instantiate_successfully():
     for mode in ("online", "emotional", "swarm_emotional"):
-        with pytest.raises(NotImplementedError):
-            create_strategy(mode, SimulationConfig(), seed=1)
+        strategy = create_strategy(mode, SimulationConfig(), seed=1)
+        assert strategy is not None
+        assert getattr(strategy, "IMPLEMENTED", False) is True
+        assert getattr(strategy, "SCIENTIFIC", False) is True
 
 
 def test_scaffold_never_enters_boulders():
@@ -88,10 +90,6 @@ def test_goal_reached_stops_movement():
     assert rover.pos == position
 
 
-@pytest.mark.xfail(
-    reason="TODO(Karol): emotional navigation path and retreat not implemented",
-    strict=False,
-)
 def test_emotional_variant_prefers_safe_alternative():
     result = run_episode(
         SimulationConfig(width=10, height=10, num_rovers=1, seed=1),
@@ -102,10 +100,6 @@ def test_emotional_variant_prefers_safe_alternative():
     assert result.is_scientific
 
 
-@pytest.mark.xfail(
-    reason="TODO(Karol): swarm emotional navigation not implemented",
-    strict=False,
-)
 def test_swarm_variant_is_scientific():
     result = run_episode(
         SimulationConfig(width=10, height=10, num_rovers=2, seed=1),
