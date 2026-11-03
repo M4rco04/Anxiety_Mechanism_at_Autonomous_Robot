@@ -47,12 +47,48 @@ class HomeostatConfig:
     w2: float = 15.0
     w3: float = 3.0
     w4: float = 2.5
-    w5: float = 2.0
+    w5: float = 3.0
     k: float = 0.05
-    alpha_safe: float = 15.0
+    # Safe ground (regolith, sand, shadow) reaches 30 deg, steep slopes 30-42.
+    # With 15 deg (spec) the slope term raised stress on harmless terrain.
+    alpha_safe: float = 25.0
     beta: float = 0.7
-    s_crit: float = 75.0
+    s_crit: float = 40.0
     rearm_factor: float = 0.8
+
+    # Model changes against the specification (see README "Homeostat"):
+    # damage_based - hull/wheel terms come from damage taken in this step
+    #   (w_hull_damage * dC_hull + w_wheel_damage * dC_wheel) instead of the
+    #   overall condition, so stress points at the terrain that hurts now.
+    # imprint_on_instantaneous - imprint fear when the instantaneous stress
+    #   crosses s_crit (acute event on the current cell) instead of the
+    #   smoothed stress, which lags behind and imprints the wrong cell.
+    # reimprint_below - a terrain can be imprinted again only when its fear
+    #   has decayed below this intensity (replaces the global re-arm).
+    damage_based: bool = True
+    w_hull_damage: float = 4.0
+    w_wheel_damage: float = 8.0
+    imprint_on_instantaneous: bool = True
+    reimprint_below: float = 0.8
+    # Slip alarm (Bielecki & Bielecki 2025): "a noticeable drop in velocity
+    # despite constant motor force" is an alarming inner-detector state on its
+    # own. Slip >= slip_alarm for slip_alarm_steps steps in a row triggers an
+    # imprint even when the stress is below s_crit. 0 steps = disabled.
+    slip_alarm: float = 0.7
+    slip_alarm_steps: int = 2
+
+    @classmethod
+    def specification(cls) -> HomeostatConfig:
+        """Original model from instruction.md section 6."""
+
+        return cls(
+            w5=2.0,
+            alpha_safe=15.0,
+            s_crit=75.0,
+            damage_based=False,
+            imprint_on_instantaneous=False,
+            slip_alarm_steps=0,
+        )
 
     def validate(self) -> None:
         non_negative = {
@@ -63,6 +99,8 @@ class HomeostatConfig:
             "w5": self.w5,
             "k": self.k,
             "s_crit": self.s_crit,
+            "w_hull_damage": self.w_hull_damage,
+            "w_wheel_damage": self.w_wheel_damage,
         }
         for name, value in non_negative.items():
             if not math.isfinite(value) or value < 0:
@@ -71,6 +109,12 @@ class HomeostatConfig:
             raise ValueError("Homeostat beta must be in [0, 1]")
         if not 0.0 <= self.rearm_factor <= 1.0:
             raise ValueError("Homeostat rearm_factor must be in [0, 1]")
+        if not 0.0 <= self.slip_alarm <= 1.0:
+            raise ValueError("Homeostat slip_alarm must be in [0, 1]")
+        if self.slip_alarm_steps < 0:
+            raise ValueError("Homeostat slip_alarm_steps must be >= 0")
+        if not 0.0 <= self.reimprint_below <= 1.0:
+            raise ValueError("Homeostat reimprint_below must be in [0, 1]")
         if not 0.0 <= self.s_crit <= 100.0:
             raise ValueError("Homeostat s_crit must be in [0, 100]")
 
@@ -99,7 +143,9 @@ class SimulationConfig:
     vision_range: int = 3
     lidar_range: int = 2
     rgb_fov_deg: float = 120.0
-    rgb_noise_sigma: float = 0.0
+    # Camera noise (std per RGB channel). Real cameras never read a colour
+    # exactly, so recognising a feared terrain is imperfect.
+    rgb_noise_sigma: float = 5.0
     signature_jitter: int = 0
 
     # Anxiety
@@ -110,9 +156,32 @@ class SimulationConfig:
     retreat_fear_threshold: float = 0.5
     allow_forced_fear_visit: bool = True
 
+    # Short-term memory (Bielecki et al. 2017, 2025): the rover keeps the
+    # circumstances of the last ``stm_steps`` steps. On an alarm the current
+    # terrain is imprinted with full intensity and the terrain seen just
+    # before it (the preceding circumstances) with ``context_imprint_weight``.
+    # Familiar terrain is conditioned weakly (latent inhibition): the context
+    # intensity is multiplied by exp(-exposures / habituation_steps) and
+    # skipped below ``min_context_intensity``.
+    stm_steps: int = 5
+    context_imprint_weight: float = 0.5
+    habituation_steps: float = 3.0
+    min_context_intensity: float = 0.15
+
     # Radio
     R_radio: int = 20
     radio_enabled: bool = True
+    # Swarm components (for control experiments): share imprinted fears by
+    # radio, and share the map of visited cells.
+    swarm_share_fear: bool = True
+    swarm_share_map: bool = True
+    # Swarm exploration: each rover explores the part of the terrain that is
+    # closer to it than to its radio peers (its own area), and does not pick
+    # targets farther than ``swarm_cohesion_radius`` from any peer, so the
+    # swarm stays together within radio range. A rover that loses contact
+    # drives back to where it last heard the others.
+    swarm_split_area: bool = True
+    swarm_cohesion_radius: int = 12
 
     # Terrain interpretation
     terrain_costs: Mapping[str, float] = field(
@@ -122,6 +191,44 @@ class SimulationConfig:
         default_factory=lambda: dict(DEFAULT_TERRAIN_RISK)
     )
     max_slope_deg: float = 90.0
+
+    # Loose sand can bog the rover down (the Spirit scenario from Bielecki &
+    # Bielecki 2025). On entering sand the rover gets stuck with
+    # ``sand_stuck_probability`` and spins its wheels (full slip, battery
+    # drain, wheel wear, stress). After ``sand_stuck_min_steps`` it digs out
+    # each step with ``sand_escape_probability`` x wheel condition / 100,
+    # and at the latest after ``sand_stuck_max_steps``. The rover is never
+    # trapped for good: it is lost only if its battery or wheels run out
+    # while digging, so it lives to learn the fear of sand.
+    sand_stuck_probability: float = 0.12
+    sand_escape_probability: float = 0.35
+    sand_stuck_min_steps: int = 3
+    sand_stuck_max_steps: int = 12
+    sand_stuck_battery: float = 2.5
+    sand_stuck_wheel_wear: float = 1.0
+
+    # Goal test: prefer targets whose shortest route crosses at least this
+    # many hazardous cells, as in the 2025 experiment where the sand pits lay
+    # on the way to the goal. 0 = any target.
+    goal_min_hazard_cells: int = 2
+    # Goal test: number of consecutive goals (legs). The fear memory is kept
+    # between legs, so what the rover learns on one leg protects it later.
+    goal_waypoints: int = 3
+
+    # Overturn recovery: an overturned rover spends this many steps getting
+    # back on its wheels (standing still, draining battery, stress rising)
+    # and then continues the mission. 0 = an overturn ends the mission.
+    overturn_recovery_steps: int = 3
+    overturn_recovery_battery: float = 2.0
+
+    # Solar charging: a rover whose battery drops below ``solar_charge_start``
+    # drives to the nearest known SafeRegolith cell (src/navigation/energy.py),
+    # stops there and charges ``solar_charge_rate`` percent per step until it
+    # reaches ``solar_charge_stop``.
+    solar_charging: bool = True
+    solar_charge_rate: float = 5.0
+    solar_charge_start: float = 40.0
+    solar_charge_stop: float = 90.0
 
     # Spawning
     spawn_on_safe: bool = True
@@ -178,6 +285,31 @@ class SimulationConfig:
             raise ValueError("fear_rgb_tolerance must be >= 0")
         if self.R_radio < 0:
             raise ValueError("R_radio must be >= 0")
+        if not 1 <= self.swarm_cohesion_radius <= max(1, self.R_radio):
+            raise ValueError("swarm_cohesion_radius must be in [1, R_radio]")
+        if self.solar_charge_rate < 0:
+            raise ValueError("solar_charge_rate must be >= 0")
+        if not 0.0 <= self.solar_charge_start <= self.solar_charge_stop <= 100.0:
+            raise ValueError(
+                "solar charge thresholds must satisfy 0 <= start <= stop <= 100"
+            )
+        if self.stm_steps < 1:
+            raise ValueError("stm_steps must be >= 1")
+        if self.context_imprint_weight < 0 or self.habituation_steps <= 0:
+            raise ValueError("context_imprint_weight >= 0 and habituation_steps > 0")
+        for name in ("sand_stuck_probability", "sand_escape_probability"):
+            if not 0.0 <= getattr(self, name) <= 1.0:
+                raise ValueError(f"{name} must be in [0, 1]")
+        if not 1 <= self.sand_stuck_min_steps <= self.sand_stuck_max_steps:
+            raise ValueError("sand stuck steps must satisfy 1 <= min <= max")
+        if self.goal_waypoints < 1:
+            raise ValueError("goal_waypoints must be >= 1")
+        if self.goal_min_hazard_cells < 0:
+            raise ValueError("goal_min_hazard_cells must be >= 0")
+        if self.overturn_recovery_steps < 0:
+            raise ValueError("overturn_recovery_steps must be >= 0")
+        if self.overturn_recovery_battery < 0:
+            raise ValueError("overturn_recovery_battery must be >= 0")
         if self.max_slope_deg <= 0:
             raise ValueError("max_slope_deg must be positive")
         if self.min_spawn_distance < 0:

@@ -52,7 +52,7 @@ def test_stress_is_clamped():
 
 
 def test_condition_terms_are_non_negative():
-    homeostat = Homeostat()
+    homeostat = Homeostat(HomeostatConfig.specification())
     reading = homeostat.update(
         delta_battery=0.0,
         target_speed=1.0,

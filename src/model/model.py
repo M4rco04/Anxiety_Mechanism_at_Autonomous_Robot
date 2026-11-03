@@ -24,6 +24,13 @@ from src.environment.terrain import (
 from src.model.types import Position, hex_distance
 from src.navigation.registry import create_strategy
 
+HAZARDOUS_TERRAIN = {
+    TerrainType.LOOSE_SAND,
+    TerrainType.VENTIFACTS,
+    TerrainType.STEEP_SLOPE,
+    TerrainType.DEEP_SHADOW,
+}
+
 
 class MarsSimulation(mesa.Model):
     """Couples the hex terrain grid, rovers, radio and metrics collection."""
@@ -210,24 +217,75 @@ class MarsSimulation(mesa.Model):
 
         used: set[Position] = set()
         for rover in self.rovers():
-            reachable = self._reachable_cells(rover.pos)
-            if not reachable:
-                raise ValueError(f"No reachable target from {rover.pos}")
-            max_distance = max(hex_distance(rover.pos, cell) for cell in reachable)
-            desired = max(1, round(max_distance * self.config.goal_target_fraction))
-            ordered = sorted(
-                reachable,
-                key=lambda cell: (
-                    abs(hex_distance(rover.pos, cell) - desired),
-                    -hex_distance(rover.pos, cell),
-                    cell,
-                ),
-            )
-            target = next((cell for cell in ordered if cell not in used), None)
-            if target is None:
-                target = ordered[0]
-            used.add(target)
-            rover.target = target
+            rover.target = self._pick_target(rover.pos, used)
+            used.add(rover.target)
+            rover.waypoints_left = max(0, int(self.config.goal_waypoints) - 1)
+
+    def _pick_target(self, start: Position, used: set[Position]) -> Position:
+        """Pick a goal at ``goal_target_fraction`` of the reachable distance.
+
+        Targets whose shortest route crosses at least ``goal_min_hazard_cells``
+        hazardous cells are preferred, so the mission leads through danger
+        (as the sand pits in the 2025 experiment).
+        """
+
+        parents = self._bfs_tree(start)
+        reachable = set(parents) - {start}
+        if not reachable:
+            raise ValueError(f"No reachable target from {start}")
+        max_distance = max(hex_distance(start, cell) for cell in reachable)
+        desired = max(1, round(max_distance * self.config.goal_target_fraction))
+        min_hazard = int(self.config.goal_min_hazard_cells)
+
+        def hazard_rank(cell: Position) -> int:
+            if min_hazard <= 0:
+                return 0
+            return 0 if self._route_hazards(parents, cell) >= min_hazard else 1
+
+        ordered = sorted(
+            reachable,
+            key=lambda cell: (
+                abs(hex_distance(start, cell) - desired) > 3,
+                hazard_rank(cell),
+                abs(hex_distance(start, cell) - desired),
+                -hex_distance(start, cell),
+                cell,
+            ),
+        )
+        return next((cell for cell in ordered if cell not in used), ordered[0])
+
+    def _bfs_tree(self, start: Position) -> dict[Position, Position | None]:
+        """Shortest-path tree over traversable cells: cell -> parent."""
+
+        if not self.is_in_bounds(start):
+            return {}
+        parents: dict[Position, Position | None] = {start: None}
+        queue = deque([start])
+        while queue:
+            position = queue.popleft()
+            for neighbour in self.grid.get_neighborhood(
+                position, include_center=False, radius=1
+            ):
+                if neighbour in parents:
+                    continue
+                terrain = self.terrain_at(neighbour)
+                if terrain is None or not terrain.traversable:
+                    continue
+                parents[neighbour] = position
+                queue.append(neighbour)
+        return parents
+
+    def _route_hazards(
+        self, parents: dict[Position, Position | None], cell: Position
+    ) -> int:
+        count = 0
+        current: Position | None = cell
+        while current is not None:
+            terrain = self.terrain_at(current)
+            if terrain is not None and terrain.terrain_type in HAZARDOUS_TERRAIN:
+                count += 1
+            current = parents.get(current)
+        return count
 
     def _reachable_cells(self, start: Position) -> set[Position]:
         if not self.is_in_bounds(start):
@@ -291,7 +349,10 @@ class MarsSimulation(mesa.Model):
         ]
 
     def mark_discovered(self, positions: Iterable[Position]) -> None:
-        self._discovered_cells.update(positions)
+        # Only traversable cells count towards coverage; filtering here keeps
+        # coverage() cheap (it runs several times per step).
+        traversable = self.traversable_cells
+        self._discovered_cells.update(p for p in positions if p in traversable)
 
     def coverage(self) -> tuple[float, float]:
         total = len(self.traversable_cells)
@@ -300,10 +361,9 @@ class MarsSimulation(mesa.Model):
         visited: set[Position] = set()
         for rover in self.rovers():
             visited.update(rover.visited)
-        discovered = self._discovered_cells & self.traversable_cells
         return (
             len(visited & self.traversable_cells) / total,
-            len(discovered) / total,
+            len(self._discovered_cells) / total,
         )
 
     def terrain_hash(self) -> str:
@@ -341,6 +401,20 @@ class MarsSimulation(mesa.Model):
 
     def _apply_mission_controller(self) -> None:
         for rover in self.rovers():
+            if rover.mission_status == "goal_reached" and rover.waypoints_left > 0:
+                # Next leg of the mission; the fear memory is kept.
+                others = {r.target for r in self.rovers() if r.target}
+                rover.target = self._pick_target(rover.pos, others)
+                rover.waypoints_left -= 1
+                rover.waypoints_reached += 1
+                rover.mission_status = "active"
+                rover.status_reason = "next waypoint"
+                rover._goal_event_sent = False
+                if rover.strategy is not None and hasattr(rover.strategy, "h_cost"):
+                    rover.strategy.h_cost.clear()
+                    if hasattr(rover.strategy, "_crossing"):
+                        rover.strategy._crossing = False
+                continue
             if (
                 rover.mission_status == "no_path"
                 and self.config.mission_mode == "goal_navigation"

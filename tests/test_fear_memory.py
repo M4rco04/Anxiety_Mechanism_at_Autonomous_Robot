@@ -33,7 +33,15 @@ def test_fear_reinforcement_and_decay():
 
 
 def test_one_imprint_per_critical_event_with_rearm():
-    model = make_model(width=4, height=4, num_rovers=0, seed=1)
+    from config.config import HomeostatConfig
+
+    model = make_model(
+        width=4,
+        height=4,
+        num_rovers=0,
+        seed=1,
+        homeostat=HomeostatConfig.specification(),
+    )
     rover = add_rover(model, (0, 0), navigation_mode="emotional")
     rover.stress_level = 80.0
     rover.stress_armed = True
@@ -86,3 +94,13 @@ def test_radio_range_and_no_damage():
     assert near.receive_signal(packet)
     assert not far.receive_signal(packet)
     assert far.battery == before
+
+
+def test_strategy_fear_cost_uses_decayed_intensity():
+    from src.agents.fear import FearView
+    from src.navigation.strategies import _match_fear_intensity
+
+    memory = {(255, 102, 102): FearView((255, 102, 102), 0.9, 0, None, "self")}
+    assert _match_fear_intensity((255, 102, 102), memory, 24.0) == 0.9
+    assert _match_fear_intensity((250, 100, 100), memory, 24.0) == 0.9
+    assert _match_fear_intensity((0, 0, 0), memory, 24.0) == 0.0

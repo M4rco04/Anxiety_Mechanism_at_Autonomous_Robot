@@ -252,6 +252,22 @@ canvas {
   color: #ff6b5f;
 }
 
+.rover-status[data-status="charging"] {
+  color: #62ff9a;
+}
+
+.rover-status[data-status="digging_out"] {
+  color: #f2a65a;
+}
+
+.rover-status[data-status="stuck"] {
+  color: #ff6b5f;
+}
+
+.rover-status[data-status="recovering"] {
+  color: #f2a65a;
+}
+
 .rover-fear {
   color: #f2a65a;
   font-size: 0.62rem;

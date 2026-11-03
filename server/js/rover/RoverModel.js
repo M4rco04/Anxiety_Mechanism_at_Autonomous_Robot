@@ -418,7 +418,7 @@ export class RoverModel {
 
     if (mission_status === "destroyed") {
       this.setDestroyed();
-    } else if (mission_status === "overturned") {
+    } else if (mission_status === "overturned" || mission_status === "recovering") {
       this.setOverturned();
     }
   }
