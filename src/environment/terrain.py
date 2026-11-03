@@ -42,9 +42,6 @@ class TerrainPatch(mesa.Agent):
     terrain_type: TerrainType = TerrainType.SAFE_REGOLITH
     color: str = "#808080"
     traversable: bool = True
-    friction: float = 0.85
-    roughness: float = 0.1
-    damage_probability: float = 0.0
 
     def __init__(
         self,
@@ -90,22 +87,6 @@ class TerrainPatch(mesa.Agent):
     def apply_effect(self, rover: Pioneer3DXAgent) -> None:
         """Apply the terrain effect.  Overridden by concrete classes."""
 
-    def get_surface_properties(self) -> dict[str, Any]:
-        return {
-            "terrain_type": self.terrain_type.value,
-            "traversable": self.traversable,
-            "movement_cost": self.movement_cost,
-            "damage_risk": self.damage_risk,
-            "slope_risk": self.slope_risk,
-            "friction": self.friction,
-            "roughness": self.roughness,
-            "damage_probability": self.damage_probability,
-            "color": self.color,
-            "optical_signature": self.optical_signature,
-            "elevation": self.elevation,
-            "slope": self.slope,
-        }
-
     def _rng(self, rover: Pioneer3DXAgent) -> np.random.Generator:
         return rover.model.rng
 
@@ -123,9 +104,6 @@ class SafeRegolith(TerrainPatch):
 
     terrain_type = TerrainType.SAFE_REGOLITH
     color = "#d2b48c"
-    friction = 0.92
-    roughness = 0.08
-    damage_probability = 0.0
 
     def apply_effect(self, rover: Pioneer3DXAgent) -> None:
         mean_drain = 0.1 + (0.2 * rover.current_speed)
@@ -140,9 +118,6 @@ class Boulders(TerrainPatch):
     terrain_type = TerrainType.BOULDERS
     color = "#4d4d4d"
     traversable = False
-    friction = 0.0
-    roughness = 1.0
-    damage_probability = 1.0
 
     def apply_effect(self, rover: Pioneer3DXAgent) -> None:
         # Defensive fallback: a correct navigation strategy never enters here.
@@ -162,9 +137,6 @@ class LooseSand(TerrainPatch):
 
     terrain_type = TerrainType.LOOSE_SAND
     color = "#e6cc80"
-    friction = 0.38
-    roughness = 0.35
-    damage_probability = 0.02
 
     def apply_effect(self, rover: Pioneer3DXAgent) -> None:
         rng = self._rng(rover)
@@ -195,9 +167,6 @@ class Ventifacts(TerrainPatch):
 
     terrain_type = TerrainType.VENTIFACTS
     color = "#8b4513"
-    friction = 0.78
-    roughness = 0.45
-    damage_probability = 0.6
 
     def apply_effect(self, rover: Pioneer3DXAgent) -> None:
         rng = self._rng(rover)
@@ -216,9 +185,6 @@ class SteepSlope(TerrainPatch):
 
     terrain_type = TerrainType.STEEP_SLOPE
     color = "#ff6666"
-    friction = 0.7
-    roughness = 0.7
-    damage_probability = 0.35
 
     def apply_effect(self, rover: Pioneer3DXAgent) -> None:
         rng = self._rng(rover)
@@ -237,7 +203,6 @@ class SteepSlope(TerrainPatch):
             rover.wheel_condition -= max(0.0, wheel_damage)
             rover.current_speed = 0.0
         else:
-            rover.gyro_alarm = self.slope > 20.0
             # Climbing a crater wall strains the wheels even without a fall.
             rover.wheel_condition -= max(0.0, float(rng.normal(loc=2.0, scale=1.0)))
         self._clamp_rover(rover)
@@ -248,9 +213,6 @@ class DeepShadow(TerrainPatch):
 
     terrain_type = TerrainType.DEEP_SHADOW
     color = "#1a1a1a"
-    friction = 0.85
-    roughness = 0.12
-    damage_probability = 0.0
 
     def apply_effect(self, rover: Pioneer3DXAgent) -> None:
         rng = self._rng(rover)
@@ -268,9 +230,6 @@ class DustStorm(TerrainPatch):
 
     terrain_type = TerrainType.DUST_STORM
     color = "#b38b6d"
-    friction = 0.8
-    roughness = 0.2
-    damage_probability = 0.0
 
     def apply_effect(self, rover: Pioneer3DXAgent) -> None:
         current_lambda = max(0.1, 2.5 - (0.4 * rover.dust_exposure_time))

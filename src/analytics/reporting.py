@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import platform
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
@@ -91,20 +89,21 @@ def write_report(
             "The rover is a grid abstraction of the Pioneer 3-DX platform. "
             "Each rover tracks battery, wheel and hull condition, speed, exposure "
             "to shadows/dust and a homeostat stress level. A one-act imprint occurs "
-            "when smoothed stress crosses `S_crit`; the current RGB signature is "
-            "stored in the anxiety memory. The emotional variants add the decayed "
-            "fear cost to movement evaluation. In the swarm variant, packets are "
-            "delivered after all rovers act, within `R_radio` hexes."
+            "when the instantaneous stress reaches `S_crit` or the slip alarm "
+            "fires; the current RGB signature is stored in the anxiety memory "
+            "(the preceding terrain as a weaker context fear). The emotional "
+            "variants add the decayed fear cost to route planning. In the swarm "
+            "variant, packets are delivered after all rovers act, within "
+            "`R_radio` hexes."
         ),
         "",
-        "Homeostat:",
+        "Homeostat (damage-based, see README):",
         "",
         "```text",
-        "S_inst = w1*dB + w2*max(0, 1 - V_act/V_target)",
-        "       + w3*(exp(k*(100-hull))-1)",
-        "       + w4*(exp(k*(100-wheel))-1)",
-        "       + w5*max(0, slope-alpha_safe)",
-        "S_new = beta*S_prev + (1-beta)*S_inst,  clamped to [0, 100]",
+        "S_inst  = w1*dB + w2*slip + w_hull*dC_hull + w_wheel*dC_wheel",
+        "        + w5*max(0, slope-alpha_safe)",
+        "S_total = beta*S_prev + (1-beta)*S_inst,  clamped to [0, 100]",
+        "slip    = max(0, 1 - V_act/V_target)",
         "```",
         "",
         "Fear cost:",
@@ -196,27 +195,4 @@ def write_report(
     return path
 
 
-def write_single_episode_report(
-    output_dir: Path,
-    result: EpisodeResult,
-) -> Path:
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "generated_utc": datetime.now(timezone.utc).isoformat(),
-        "platform": platform.platform(),
-        "seed": result.seed,
-        "navigation_mode": result.navigation_mode,
-        "mission_mode": result.mission_mode,
-        "scientific": result.is_scientific,
-        "metrics": result.metrics,
-        "rovers": result.rovers,
-        "termination_reason": result.termination_reason,
-        "terrain_hash": result.terrain_hash,
-    }
-    path = output_dir / "episode.json"
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    return path
-
-
-__all__ = ["print_summary", "write_report", "write_single_episode_report"]
+__all__ = ["print_summary", "write_report"]

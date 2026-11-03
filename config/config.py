@@ -388,17 +388,6 @@ class SimulationConfig:
 
 DEFAULT_CONFIG = SimulationConfig()
 DEFAULT_CONFIG.validate()
-SIMULATION_CONFIG = DEFAULT_CONFIG.to_dict()
-
-
-def config_from_overrides(overrides: Mapping[str, Any] | None = None) -> SimulationConfig:
-    """Create a validated config from a flat mapping of overrides."""
-
-    config = DEFAULT_CONFIG
-    if overrides:
-        config = config.replace(**dict(overrides))
-    config.validate()
-    return config
 
 
 __all__ = [
@@ -407,8 +396,6 @@ __all__ = [
     "DEFAULT_TERRAIN_RISK",
     "MISSION_MODES",
     "NAVIGATION_MODES",
-    "SIMULATION_CONFIG",
     "HomeostatConfig",
     "SimulationConfig",
-    "config_from_overrides",
 ]

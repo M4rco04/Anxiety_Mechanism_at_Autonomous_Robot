@@ -6,8 +6,6 @@
   (retreat, fear as a route cost, no circling in feared pockets).
 - ``swarm_emotional``: ``emotional`` plus radio-shared fear and map and
   area splitting between swarm rovers.
-
-``LRTAStarStrategy`` is a reference LRTA* agent, not registered as a mode.
 """
 
 from __future__ import annotations
@@ -200,7 +198,43 @@ def _frontier_step(
     return None
 
 
-class OnlineSearchStrategy:
+def _without_previous(rover, actions: list[Position]) -> list[Position]:
+    """Do not step straight back to the previous cell if there is a choice."""
+
+    previous: Position | None = rover.path[-2] if len(rover.path) >= 2 else None
+    if len(actions) > 1 and previous in actions:
+        return [a for a in actions if a != previous]
+    return actions
+
+
+def _explore_key(
+    board: HexGridBoard,
+    observation: Observation,
+    fear_costs: Mapping[Position, float] | None = None,
+) -> Callable[[Position], tuple]:
+    """Exploration order: unvisited first, most unvisited neighbours, cheapest."""
+
+    def key(action: Position) -> tuple:
+        unseen = sum(
+            1
+            for neighbour in board.neighbors(action)
+            if neighbour not in observation.visited
+        )
+        terrain = observation.visible_cells.get(action)
+        cost = terrain.movement_cost if terrain else board.movement_cost(action)
+        fear = fear_costs.get(action, 0.0) if fear_costs else 0.0
+        return (
+            1 if action in observation.visited else 0,
+            -unseen,
+            cost + fear,
+            action,
+        )
+
+    return key
+
+
+class _StrategyBase:
+    """State and first decision steps shared by all scientific strategies."""
 
     IMPLEMENTED = True
     SCIENTIFIC = True
@@ -212,7 +246,9 @@ class OnlineSearchStrategy:
         self._moves = 0
         self._forced_visits = 0
         self._retreats = 0
-        # Heuristic lookup for LRTA* / Online Search
+        # Crossing feared terrain on purpose: do not retreat halfway.
+        self._crossing = False
+        # LRTA* heuristic table of the greedy goal fallback.
         self.h_cost: dict[Position, float] = {}
 
     def _get_board(self, rover) -> HexGridBoard:
@@ -220,90 +256,47 @@ class OnlineSearchStrategy:
             self.board = HexGridBoard(rover.model)
         return self.board
 
-    def choose_next(
-        self, rover, observation: Observation
-    ) -> NavigationDecision | None:
+    def _fear_of(self, rover) -> Callable[[RGB | None], float]:
+        fear_weight = float(self.config.fear_weight)
+        return lambda signature: fear_weight * rover.fear_intensity(signature)
+
+    def _start(
+        self,
+        rover,
+        observation: Observation,
+        fear_cost: Callable[[RGB | None], float] | None = None,
+    ) -> tuple[HexGridBoard, list[Position], NavigationDecision | None]:
+        """Mission end checks, candidate moves and low-battery charging.
+
+        Returns ``(board, actions, decision)``; a decision is final.
+        """
 
         board = self._get_board(rover)
         if observation.mission_mode == "goal_navigation":
             if observation.target is None:
-                return NavigationDecision(None, "missing target", "no_path")
+                return board, [], NavigationDecision(None, "missing target", "no_path")
             if observation.position == observation.target:
-                return NavigationDecision(None, "target reached", "goal_reached")
+                return board, [], NavigationDecision(
+                    None, "target reached", "goal_reached"
+                )
         elif observation.mission_mode == "exploration":
             if observation.coverage_visited >= observation.coverage_target:
-                return NavigationDecision(
+                return board, [], NavigationDecision(
                     None, "coverage target reached", "exploration_complete"
                 )
 
-            # 2. Candidate actions
         actions = board.actions(observation.position, observation)
         if not actions:
-            return NavigationDecision(None, "no safe neighbour", "no_path")
+            return board, actions, NavigationDecision(
+                None, "no safe neighbour", "no_path"
+            )
 
         # Low battery: go to the nearest known safe cell to charge.
-        charge = seek_charging_spot(rover, observation, board)
+        charge = seek_charging_spot(rover, observation, board, fear_cost)
         if charge is not None:
             self._moves += 1
-            return charge
-
-        # 3. Goal navigation: A* over known terrain, replanned every step.
-        if observation.mission_mode == "goal_navigation":
-            target = observation.target
-            assert target is not None
-            planned = plan_first_step(rover, observation, board, target)
-            if planned is not None:
-                self._moves += 1
-                return NavigationDecision(planned[0], "online goal search", "moving")
-
-            for action in actions:
-                if action not in self.h_cost:
-                    self.h_cost[action] = float(board.hex_distance(action, target))
-            self.h_cost[target] = 0.0
-
-            def goal_key(action: Position):
-                terrain = observation.visible_cells.get(action)
-                cost = terrain.movement_cost if terrain else board.movement_cost(action)
-                h_val = self.h_cost[action]
-                visited_penalty = 1.5 if action in observation.visited else 0.0
-                return (cost + h_val + visited_penalty, action)
-
-            chosen = min(actions, key=goal_key)
-            # LRTA* update (same as the emotional variants): avoids circling.
-            position = observation.position
-            self.h_cost[position] = max(
-                self.h_cost.get(
-                    position, float(board.hex_distance(position, target))
-                ),
-                goal_key(chosen)[0],
-            )
-            self._moves += 1
-            return NavigationDecision(chosen, "online goal search", "moving")
-
-        # 4. Exploration mode (Frontier / Unseen exploration)
-        previous: Position | None = rover.path[-2] if len(rover.path) >= 2 else None
-        candidate_actions = actions
-        if len(candidate_actions) > 1 and previous in candidate_actions:
-            candidate_actions = [a for a in candidate_actions if a != previous]
-
-        def explore_key(action: Position):
-            unseen = sum(
-                1
-                for neighbour in board.neighbors(action)
-                if neighbour not in observation.visited
-            )
-            terrain = observation.visible_cells.get(action)
-            cost = terrain.movement_cost if terrain else board.movement_cost(action)
-            return (
-                1 if action in observation.visited else 0,
-                -unseen,
-                cost,
-                action,
-            )
-
-        chosen = min(candidate_actions, key=explore_key)
-        self._moves += 1
-        return NavigationDecision(chosen, "online exploration", "moving")
+            return board, actions, charge
+        return board, actions, None
 
     def statistics(self) -> Mapping[str, int | float]:
         return {
@@ -314,113 +307,61 @@ class OnlineSearchStrategy:
         }
 
 
-class LRTAStarStrategy:
-
-    IMPLEMENTED = True
-    SCIENTIFIC = True
-
-    def __init__(self, config: SimulationConfig, seed: int = 0) -> None:
-        self.config = config
-        self.seed = seed
-        self.board: HexGridBoard | None = None
-        self._moves = 0
-        self.h_cost: dict[Position, float] = {}
-
-    def _get_board(self, rover) -> HexGridBoard:
-        if self.board is None or self.board.model is not rover.model:
-            self.board = HexGridBoard(rover.model)
-        return self.board
+class OnlineSearchStrategy(_StrategyBase):
+    """Plain rover: A* to the goal, greedy frontier exploration, no anxiety."""
 
     def choose_next(
         self, rover, observation: Observation
     ) -> NavigationDecision | None:
-        board = self._get_board(rover)
+        board, actions, decision = self._start(rover, observation)
+        if decision is not None:
+            return decision
 
+        # Goal navigation: A* over known terrain, replanned every step.
         if observation.mission_mode == "goal_navigation":
-            if observation.target is None:
-                return NavigationDecision(None, "missing target", "no_path")
-            if observation.position == observation.target:
-                return NavigationDecision(None, "target reached", "goal_reached")
-        elif observation.mission_mode == "exploration":
-            if observation.coverage_visited >= observation.coverage_target:
-                return NavigationDecision(
-                    None, "coverage target reached", "exploration_complete"
-                )
+            target = observation.target
+            assert target is not None
+            planned = plan_first_step(rover, observation, board, target)
+            if planned is not None:
+                self._moves += 1
+                return NavigationDecision(planned[0], "online goal search", "moving")
 
-        actions = board.actions(observation.position, observation)
-        if not actions:
-            return NavigationDecision(None, "no safe neighbour", "no_path")
-
-        charge = seek_charging_spot(rover, observation, board)
-        if charge is not None:
-            self._moves += 1
-            return charge
-
-        target = observation.target if observation.mission_mode == "goal_navigation" else None
-
-        # Update heuristic table
-        if target is not None:
-            self.h_cost[target] = 0.0
+            # No route through known terrain: greedy LRTA* step.
             for action in actions:
                 if action not in self.h_cost:
                     self.h_cost[action] = float(board.hex_distance(action, target))
+            self.h_cost[target] = 0.0
 
-            # LRTA* update rule for current position
-            best_successor_cost = min(
-                (observation.visible_cells.get(a).movement_cost if observation.visible_cells.get(a) else board.movement_cost(a)) + self.h_cost[a]
-                for a in actions
-            )
-            self.h_cost[observation.position] = max(
-                self.h_cost.get(observation.position, float(board.hex_distance(observation.position, target))),
-                best_successor_cost,
-            )
-
-            def lrta_key(action: Position):
+            def goal_key(action: Position):
                 terrain = observation.visible_cells.get(action)
                 cost = terrain.movement_cost if terrain else board.movement_cost(action)
-                return (cost + self.h_cost[action], action)
+                visited_penalty = 1.5 if action in observation.visited else 0.0
+                return (cost + self.h_cost[action] + visited_penalty, action)
 
-            chosen = min(actions, key=lrta_key)
-            self._moves += 1
-            return NavigationDecision(chosen, "lrta* step", "moving")
-
-        # Exploration fallback for LRTA*
-        def explore_key(action: Position):
-            unseen = sum(
-                1
-                for neighbour in board.neighbors(action)
-                if neighbour not in observation.visited
+            chosen = min(actions, key=goal_key)
+            position = observation.position
+            self.h_cost[position] = max(
+                self.h_cost.get(
+                    position, float(board.hex_distance(position, target))
+                ),
+                goal_key(chosen)[0],
             )
-            return (1 if action in observation.visited else 0, -unseen, action)
+            self._moves += 1
+            return NavigationDecision(chosen, "online goal search", "moving")
 
-        chosen = min(actions, key=explore_key)
+        # Exploration: greedy step towards unvisited terrain.
+        chosen = min(
+            _without_previous(rover, actions), key=_explore_key(board, observation)
+        )
         self._moves += 1
-        return NavigationDecision(chosen, "lrta* explore", "moving")
-
-    def statistics(self) -> Mapping[str, int | float]:
-        return {"moves": self._moves, "scientific": 1}
+        return NavigationDecision(chosen, "online exploration", "moving")
 
 
-class EmotionalStrategy:
+class EmotionalStrategy(_StrategyBase):
+    """Plain rules plus the conditioned-anxiety mechanism."""
 
-    IMPLEMENTED = True
-    SCIENTIFIC = True
     GOAL_REASON = "emotional goal navigation"
-
-    def __init__(self, config: SimulationConfig, seed: int = 0) -> None:
-        self.config = config
-        self.seed = seed
-        self.board: HexGridBoard | None = None
-        self._moves = 0
-        self._forced_visits = 0
-        self._retreats = 0
-        self._crossing = False
-        self.h_cost: dict[Position, float] = {}
-
-    def _get_board(self, rover) -> HexGridBoard:
-        if self.board is None or self.board.model is not rover.model:
-            self.board = HexGridBoard(rover.model)
-        return self.board
+    EXPLORE_REASON = "emotional exploration"
 
     def _get_fear_cost(
         self, position: Position, observation: Observation, rover=None
@@ -438,70 +379,68 @@ class EmotionalStrategy:
             signature = remembered.rgb_signature if remembered is not None else None
 
         tolerance = float(self.config.fear_rgb_tolerance)
-        fear_weight = float(self.config.fear_weight)
-
         intensity = _match_fear_intensity(signature, observation.anxiety_memory, tolerance)
-        return fear_weight * intensity
+        return float(self.config.fear_weight) * intensity
 
-    def choose_next(
+    def _anxious_start(
         self, rover, observation: Observation
-    ) -> NavigationDecision | None:
-        board = self._get_board(rover)
+    ) -> tuple[HexGridBoard, list[Position], NavigationDecision | None]:
+        """``_start`` with fear, then retreat and goal navigation."""
 
-        # 1. Termination checks
-        if observation.mission_mode == "goal_navigation":
-            if observation.target is None:
-                return NavigationDecision(None, "missing target", "no_path")
-            if observation.position == observation.target:
-                return NavigationDecision(None, "target reached", "goal_reached")
-        elif observation.mission_mode == "exploration":
-            if observation.coverage_visited >= observation.coverage_target:
-                return NavigationDecision(
-                    None, "coverage target reached", "exploration_complete"
-                )
-
-        # 2. Candidate actions
-        actions = board.actions(observation.position, observation)
-        if not actions:
-            return NavigationDecision(None, "no safe neighbour", "no_path")
-
-        # 3. High-anxiety retreat handling
-        # Low battery: go to the nearest known safe cell, avoiding feared terrain.
-        charge = seek_charging_spot(
-            rover,
-            observation,
-            board,
-            lambda signature: float(self.config.fear_weight)
-            * rover.fear_intensity(signature),
+        board, actions, decision = self._start(
+            rover, observation, self._fear_of(rover)
         )
-        if charge is not None:
-            self._moves += 1
-            return charge
+        if decision is not None:
+            return board, actions, decision
 
+        # On strongly feared terrain: step back to a less feared neighbour.
         if observation.retreat_required and not self._crossing:
             retreat = _retreat_decision(rover, observation, board, actions)
             if retreat is not None:
                 self._retreats += 1
                 self._moves += 1
-                return retreat
+                return board, actions, retreat
 
         if observation.mission_mode == "goal_navigation":
-            return _fearful_goal_step(
+            return board, actions, _fearful_goal_step(
                 self, rover, observation, board, actions, self.GOAL_REASON
             )
+        return board, actions, None
 
-        # 4. Fear-cost evaluation and filtering
+    def _keep_in_range(
+        self, candidates: list[Position], observation: Observation
+    ) -> list[Position]:
+        """Hook for the swarm: drop moves that leave radio range."""
+
+        return candidates
+
+    def _frontier_allowed(
+        self, rover, observation: Observation
+    ) -> Callable[[Position], bool] | None:
+        """Hook for the swarm: reject some first steps to new terrain."""
+
+        return None
+
+    def _local_explore(
+        self,
+        rover,
+        observation: Observation,
+        board: HexGridBoard,
+        actions: list[Position],
+    ) -> NavigationDecision:
+        """Greedy exploration step that skips feared neighbours."""
+
         fear_costs: dict[Position, float] = {
             a: self._get_fear_cost(a, observation, rover) for a in actions
         }
         # Weak fears (decayed or context fears) only add cost, they do not block.
         block_level = 0.1 * float(self.config.fear_weight)
-        non_fear_actions = [a for a in actions if fear_costs[a] < block_level]
+        candidates = [a for a in actions if fear_costs[a] < block_level]
         forced_visit = False
 
-        if not non_fear_actions:
+        if not candidates:
             if observation.allow_forced_fear_visit:
-                non_fear_actions = actions
+                candidates = actions
                 forced_visit = True
                 self._forced_visits += 1
             else:
@@ -515,35 +454,20 @@ class EmotionalStrategy:
                     None, "blocked by fear on all paths", "blocked"
                 )
 
-        candidate_actions = non_fear_actions
-
-        # 5. Exploration mode (goal navigation returned above)
-        previous: Position | None = rover.path[-2] if len(rover.path) >= 2 else None
-        if len(candidate_actions) > 1 and previous in candidate_actions:
-            candidate_actions = [a for a in candidate_actions if a != previous]
-
-        def explore_key(action: Position):
-            unseen = sum(
-                1
-                for neighbour in board.neighbors(action)
-                if neighbour not in observation.visited
-            )
-            terrain = observation.visible_cells.get(action)
-            cost = terrain.movement_cost if terrain else board.movement_cost(action)
-            fear = fear_costs.get(action, 0.0)
-            return (
-                1 if action in observation.visited else 0,
-                -unseen,
-                cost + fear,
-                action,
-            )
-
-        chosen = min(candidate_actions, key=explore_key)
+        candidates = _without_previous(
+            rover, self._keep_in_range(candidates, observation)
+        )
+        chosen = min(candidates, key=_explore_key(board, observation, fear_costs))
         if chosen in observation.visited:
             # Nothing new nearby: plan a route to new terrain instead of
             # circling inside a pocket of safe cells.
             frontier = _frontier_step(
-                self, rover, observation, board, "emotional exploration (to new terrain)"
+                self,
+                rover,
+                observation,
+                board,
+                f"{self.EXPLORE_REASON} (to new terrain)",
+                allowed=self._frontier_allowed(rover, observation),
             )
             if frontier is not None:
                 self._moves += 1
@@ -551,33 +475,30 @@ class EmotionalStrategy:
         self._crossing = False
         self._moves += 1
         status = "forced_fear_visit" if forced_visit else "moving"
-        return NavigationDecision(chosen, "emotional exploration", status)
+        return NavigationDecision(chosen, self.EXPLORE_REASON, status)
 
-    def statistics(self) -> Mapping[str, int | float]:
-        return {
-            "moves": self._moves,
-            "forced_visits": self._forced_visits,
-            "retreats": self._retreats,
-            "scientific": 1,
-        }
+    def choose_next(
+        self, rover, observation: Observation
+    ) -> NavigationDecision | None:
+        board, actions, decision = self._anxious_start(rover, observation)
+        if decision is not None:
+            return decision
+        return self._local_explore(rover, observation, board, actions)
 
 
-class SwarmEmotionalStrategy:
-    """Emotional navigation with own and radio-received fear memory."""
+class SwarmEmotionalStrategy(EmotionalStrategy):
+    """Emotional navigation with own and radio-received fear memory.
 
-    IMPLEMENTED = True
-    SCIENTIFIC = True
+    Received radio signatures are already merged into
+    ``observation.anxiety_memory`` by the radio layer. In exploration the
+    rovers split the terrain and stay within radio range of each other.
+    """
+
     GOAL_REASON = "swarm emotional goal navigation"
+    EXPLORE_REASON = "swarm emotional exploration"
 
     def __init__(self, config: SimulationConfig, seed: int = 0) -> None:
-        self.config = config
-        self.seed = seed
-        self.board: HexGridBoard | None = None
-        self._moves = 0
-        self._forced_visits = 0
-        self._retreats = 0
-        self._crossing = False
-        self.h_cost: dict[Position, float] = {}
+        super().__init__(config, seed)
         # Last position heard from each swarm peer (rover id -> position).
         self.peer_memory: dict[int, Position] = {}
         self._regroups = 0
@@ -586,32 +507,6 @@ class SwarmEmotionalStrategy:
         self.following = False
         # Current exploration target and the reason it was chosen.
         self.area_target: tuple[Position, str] | None = None
-
-    def _get_board(self, rover) -> HexGridBoard:
-        if self.board is None or self.board.model is not rover.model:
-            self.board = HexGridBoard(rover.model)
-        return self.board
-
-    def _get_fear_cost(
-        self, position: Position, observation: Observation, rover=None
-    ) -> float:
-        if not observation.anxiety_memory:
-            return 0.0
-
-        signature = observation.rgb_signatures.get(position)
-        if signature is None and position in observation.visible_cells:
-            signature = observation.visible_cells[position].rgb_signature
-        # Cells outside the forward camera view: use the remembered terrain,
-        # otherwise most neighbours would look fear-free.
-        if signature is None and rover is not None:
-            remembered = rover.known_terrain.get(position)
-            signature = remembered.rgb_signature if remembered is not None else None
-
-        tolerance = float(self.config.fear_rgb_tolerance)
-        fear_weight = float(self.config.fear_weight)
-
-        intensity = _match_fear_intensity(signature, observation.anxiety_memory, tolerance)
-        return fear_weight * intensity
 
     def _radio_limit(self) -> int:
         # Keep a margin: two rovers may each move one cell apart per step.
@@ -873,143 +768,49 @@ class SwarmEmotionalStrategy:
         status = "forced_fear_visit" if self._crossing else "moving"
         return NavigationDecision(step, "following the swarm leader", status)
 
+    def _keep_in_range(
+        self, candidates: list[Position], observation: Observation
+    ) -> list[Position]:
+        # Do not wander out of radio range of the swarm.
+        if self.config.swarm_split_area and observation.swarm_peers:
+            in_range = [
+                a
+                for a in candidates
+                if self._within_radio(a, observation.swarm_peers)
+            ]
+            return in_range or candidates
+        return candidates
+
+    def _frontier_allowed(
+        self, rover, observation: Observation
+    ) -> Callable[[Position], bool] | None:
+        peers = observation.swarm_peers
+        bounce = _bounce_cells(rover)
+        limit_radio = bool(self.config.swarm_split_area and peers)
+        return lambda step: step not in bounce and (
+            not limit_radio or self._within_radio(step, peers)
+        )
+
     def choose_next(
         self, rover, observation: Observation
     ) -> NavigationDecision | None:
-        # Same decision rule as EmotionalStrategy; received radio signatures
-        # are already merged into observation.anxiety_memory by the radio layer.
-        board = self._get_board(rover)
-
-        if observation.mission_mode == "goal_navigation":
-            if observation.target is None:
-                return NavigationDecision(None, "missing target", "no_path")
-            if observation.position == observation.target:
-                return NavigationDecision(None, "target reached", "goal_reached")
-        elif observation.mission_mode == "exploration":
-            if observation.coverage_visited >= observation.coverage_target:
-                return NavigationDecision(
-                    None, "coverage target reached", "exploration_complete"
-                )
-
-        actions = board.actions(observation.position, observation)
-        if not actions:
-            return NavigationDecision(None, "no safe neighbour", "no_path")
-
-        # Low battery: go to the nearest known safe cell, avoiding feared terrain.
-        charge = seek_charging_spot(
-            rover,
-            observation,
-            board,
-            lambda signature: float(self.config.fear_weight)
-            * rover.fear_intensity(signature),
-        )
-        if charge is not None:
-            self._moves += 1
-            return charge
-
-        if observation.retreat_required and not self._crossing:
-            retreat = _retreat_decision(rover, observation, board, actions)
-            if retreat is not None:
-                self._retreats += 1
-                self._moves += 1
-                return retreat
-
-        if observation.mission_mode == "goal_navigation":
-            return _fearful_goal_step(
-                self, rover, observation, board, actions, self.GOAL_REASON
-            )
+        board, actions, decision = self._anxious_start(rover, observation)
+        if decision is not None:
+            return decision
 
         if self.config.swarm_split_area:
             decision = self._swarm_explore_step(rover, observation, board)
             if decision is not None:
                 self._moves += 1
                 return decision
-
-        fear_costs: dict[Position, float] = {
-            a: self._get_fear_cost(a, observation, rover) for a in actions
-        }
-        # Weak fears (decayed or context fears) only add cost, they do not block.
-        block_level = 0.1 * float(self.config.fear_weight)
-        non_fear_actions = [a for a in actions if fear_costs[a] < block_level]
-        forced_visit = False
-
-        if not non_fear_actions:
-            if observation.allow_forced_fear_visit:
-                non_fear_actions = actions
-                forced_visit = True
-                self._forced_visits += 1
-            else:
-                frontier = _frontier_step(
-                    self, rover, observation, board, "crossing feared terrain to new ground"
-                )
-                if frontier is not None:
-                    self._moves += 1
-                    return frontier
-                return NavigationDecision(
-                    None, "blocked by fear on all paths", "blocked"
-                )
-
-        candidate_actions = non_fear_actions
-        # Do not wander out of radio range of the swarm.
-        if self.config.swarm_split_area and observation.swarm_peers:
-            in_range = [
-                a
-                for a in candidate_actions
-                if self._within_radio(a, observation.swarm_peers)
-            ]
-            candidate_actions = in_range or candidate_actions
-
-        previous: Position | None = rover.path[-2] if len(rover.path) >= 2 else None
-        if len(candidate_actions) > 1 and previous in candidate_actions:
-            candidate_actions = [a for a in candidate_actions if a != previous]
-
-        def explore_key(action: Position):
-            unseen = sum(
-                1
-                for neighbour in board.neighbors(action)
-                if neighbour not in observation.visited
-            )
-            terrain = observation.visible_cells.get(action)
-            cost = terrain.movement_cost if terrain else board.movement_cost(action)
-            fear = fear_costs.get(action, 0.0)
-            return (
-                1 if action in observation.visited else 0,
-                -unseen,
-                cost + fear,
-                action,
-            )
-
-        chosen = min(candidate_actions, key=explore_key)
-        if chosen in observation.visited:
-            peers = observation.swarm_peers
-            bounce = _bounce_cells(rover)
-            limit_radio = bool(self.config.swarm_split_area and peers)
-            frontier = _frontier_step(
-                self,
-                rover,
-                observation,
-                board,
-                "swarm emotional exploration (to new terrain)",
-                allowed=lambda step: step not in bounce
-                and (not limit_radio or self._within_radio(step, peers)),
-            )
-            if frontier is not None:
-                self._moves += 1
-                return frontier
-        self._crossing = False
-        self._moves += 1
-        status = "forced_fear_visit" if forced_visit else "moving"
-        return NavigationDecision(chosen, "swarm emotional exploration", status)
+        return self._local_explore(rover, observation, board, actions)
 
     def statistics(self) -> Mapping[str, int | float]:
         return {
-            "moves": self._moves,
-            "forced_visits": self._forced_visits,
-            "retreats": self._retreats,
+            **super().statistics(),
             "regroups": self._regroups,
             "area_moves": self._area_moves,
             "waits": self._waits,
-            "scientific": 1,
         }
 
 
@@ -1022,7 +823,6 @@ STRATEGY_CLASSES = {
 __all__ = [
     "STRATEGY_CLASSES",
     "EmotionalStrategy",
-    "LRTAStarStrategy",
     "OnlineSearchStrategy",
     "SwarmEmotionalStrategy",
 ]

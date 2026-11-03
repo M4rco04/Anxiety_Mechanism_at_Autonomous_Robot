@@ -82,7 +82,6 @@ class Pioneer3DXAgent(mesa.Agent):
         # Environment exposure / safety
         self.shadow_exposure_time = 0
         self.dust_exposure_time = 0
-        self.gyro_alarm = False
         self.is_overturned = False
         self.recovery_steps_left = 0
         self.recoveries = 0
@@ -121,7 +120,6 @@ class Pioneer3DXAgent(mesa.Agent):
         self.critical_events = 0
         self.goal_step: int | None = None
         self.previous_position: Position | None = None
-        self.previous_terrain_type: TerrainType | None = None
         self.current_terrain_type: TerrainType | None = None
         self.last_effect: dict = {}
         self.last_action_reason = ""
@@ -163,10 +161,6 @@ class Pioneer3DXAgent(mesa.Agent):
     @property
     def current_terrain(self) -> TerrainPatch | None:
         return self.model.terrain_at(self.pos)
-
-    @property
-    def emotional_mode(self) -> bool:
-        return self.emotional_enabled
 
     @property
     def current_slope(self) -> float:
@@ -435,8 +429,6 @@ class Pioneer3DXAgent(mesa.Agent):
         self.hull_prev = self.hull_condition
         self.wheel_prev = self.wheel_condition
         self.previous_position = self.pos
-        self.previous_terrain_type = self.current_terrain_type
-        self.gyro_alarm = False
         self.target_speed = 0.0
         self.current_speed = 0.0
 
@@ -686,7 +678,6 @@ class Pioneer3DXAgent(mesa.Agent):
         self.charging = True
         self.battery_prev = self.battery
         self.previous_position = self.pos
-        self.gyro_alarm = False
         self.target_speed = 0.0
         self.current_speed = 0.0
         self.battery = min(
@@ -732,7 +723,6 @@ class Pioneer3DXAgent(mesa.Agent):
 
         self.battery_prev = self.battery
         self.previous_position = self.pos
-        self.gyro_alarm = True
         self.target_speed = self.base_speed
         self.current_speed = 0.0
         self.battery = clamp(
@@ -910,18 +900,6 @@ class Pioneer3DXAgent(mesa.Agent):
                 "goal_reached", rover_id=self.unique_id, position=self.pos
             )
 
-    # ------------------------------------------------------------------
-    # Compatibility helpers
-    # ------------------------------------------------------------------
-    def move(self) -> None:
-        """Deprecated compatibility wrapper.
-
-        Movement is selected by the strategy inside :meth:`step`.  Calling
-        this method simply executes a complete step and must not be used by
-        new code.
-        """
-
-        self.step()
 
 
 __all__ = ["Pioneer3DXAgent"]

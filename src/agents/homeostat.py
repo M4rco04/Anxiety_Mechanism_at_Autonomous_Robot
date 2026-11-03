@@ -42,12 +42,10 @@ class Homeostat:
         self.config.validate()
         self.previous = 0.0
         self.slip_streak = 0
-        self.last_components: dict[str, float] = {}
 
     def reset(self) -> None:
         self.previous = 0.0
         self.slip_streak = 0
-        self.last_components = {}
 
     def update(
         self,
@@ -97,7 +95,6 @@ class Homeostat:
             100.0,
         )
         self.previous = smoothed
-        self.last_components = components
 
         self.slip_streak = self.slip_streak + 1 if slip >= cfg.slip_alarm > 0 else 0
         stress = instantaneous if cfg.imprint_on_instantaneous else smoothed

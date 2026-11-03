@@ -287,25 +287,6 @@ class MarsSimulation(mesa.Model):
             current = parents.get(current)
         return count
 
-    def _reachable_cells(self, start: Position) -> set[Position]:
-        if not self.is_in_bounds(start):
-            return set()
-        seen = {start}
-        queue = deque([start])
-        while queue:
-            position = queue.popleft()
-            for neighbour in self.grid.get_neighborhood(
-                position, include_center=False, radius=1
-            ):
-                if neighbour in seen:
-                    continue
-                terrain = self.terrain_at(neighbour)
-                if terrain is None or not terrain.traversable:
-                    continue
-                seen.add(neighbour)
-                queue.append(neighbour)
-        return seen
-
     # ------------------------------------------------------------------
     # Queries
     # ------------------------------------------------------------------
@@ -334,18 +315,6 @@ class MarsSimulation(mesa.Model):
             rover
             for rover in self.rovers()
             if rover.pos is not None and hex_distance(rover.pos, position) <= radius
-        ]
-
-    def get_neighborhood_info(
-        self, position: Position, radius: int = 1
-    ) -> list[TerrainPatch]:
-        positions = self.grid.get_neighborhood(
-            position, include_center=False, radius=radius
-        )
-        return [
-            terrain
-            for terrain in (self.terrain_at(cell) for cell in positions)
-            if terrain is not None
         ]
 
     def mark_discovered(self, positions: Iterable[Position]) -> None:
