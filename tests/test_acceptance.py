@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from config.config import SimulationConfig
 from src.analytics.benchmark import run_episode
 from src.environment.terrain import Boulders

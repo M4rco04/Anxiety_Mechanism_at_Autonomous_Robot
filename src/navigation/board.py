@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING
 
-from src.environment.terrain import Boulders, TerrainPatch
+from src.environment.terrain import TerrainPatch
 from src.model.types import Position, hex_distance
 from src.navigation.types import Observation
 
@@ -39,10 +39,6 @@ class HexGridBoard:
     def terrain_at(self, position: Position) -> TerrainPatch | None:
         return self.model.terrain_at(position)
 
-    def is_traversable(self, position: Position) -> bool:
-        terrain = self.terrain_at(position)
-        return terrain is not None and terrain.traversable
-
     def is_occupied_by_rover(
         self, position: Position, exclude_id: int | None = None
     ) -> bool:
@@ -72,9 +68,6 @@ class HexGridBoard:
 
     def hex_distance(self, a: Position, b: Position) -> int:
         return hex_distance(a, b)
-
-    def is_boulder(self, position: Position) -> bool:
-        return isinstance(self.terrain_at(position), Boulders)
 
 
 __all__ = ["HexGridBoard"]

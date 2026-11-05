@@ -17,12 +17,17 @@ class HomeostatReading:
     smoothed: float
     components: dict[str, float] = field(default_factory=dict)
     critical: bool = False
+    # Which inner detector raised the alarm: "stress", "slip" or None.
+    alarm: str | None = None
 
 
 class Homeostat:
     """Tracks the robot's internal stress level.
 
-    The implementation follows the formula from the project instructions::
+    With ``damage_based=True`` (default) the hull/wheel terms are
+    ``w_hull_damage * dC_hull + w_wheel_damage * dC_wheel`` (damage taken in
+    this step). With ``HomeostatConfig.specification()`` the formula follows
+    the project instructions exactly::
 
         S_inst = w1 * dB + w2 * max(0, 1 - V_act / V_target)
                + w3 * (exp(k * (100 - hull)) - 1)
@@ -36,11 +41,11 @@ class Homeostat:
         self.config = config or HomeostatConfig()
         self.config.validate()
         self.previous = 0.0
-        self.last_components: dict[str, float] = {}
+        self.slip_streak = 0
 
     def reset(self) -> None:
         self.previous = 0.0
-        self.last_components = {}
+        self.slip_streak = 0
 
     def update(
         self,
@@ -51,6 +56,8 @@ class Homeostat:
         hull_condition: float,
         wheel_condition: float,
         current_slope: float,
+        hull_damage: float = 0.0,
+        wheel_damage: float = 0.0,
     ) -> HomeostatReading:
         cfg = self.config
 
@@ -66,15 +73,19 @@ class Homeostat:
             if target_speed <= 1e-9
             else max(0.0, 1.0 - current_speed / target_speed)
         )
-        hull_term = math.exp(cfg.k * (100.0 - hull_condition)) - 1.0
-        wheel_term = math.exp(cfg.k * (100.0 - wheel_condition)) - 1.0
         slope_term = max(0.0, current_slope - cfg.alpha_safe)
+        if cfg.damage_based:
+            hull = cfg.w_hull_damage * max(0.0, _finite(hull_damage))
+            wheel = cfg.w_wheel_damage * max(0.0, _finite(wheel_damage))
+        else:
+            hull = cfg.w3 * (math.exp(cfg.k * (100.0 - hull_condition)) - 1.0)
+            wheel = cfg.w4 * (math.exp(cfg.k * (100.0 - wheel_condition)) - 1.0)
 
         components = {
             "battery": cfg.w1 * delta_battery,
             "slip": cfg.w2 * slip,
-            "hull": cfg.w3 * hull_term,
-            "wheel": cfg.w4 * wheel_term,
+            "hull": hull,
+            "wheel": wheel,
             "slope": cfg.w5 * slope_term,
         }
         instantaneous = sum(components.values())
@@ -84,12 +95,20 @@ class Homeostat:
             100.0,
         )
         self.previous = smoothed
-        self.last_components = components
+
+        self.slip_streak = self.slip_streak + 1 if slip >= cfg.slip_alarm > 0 else 0
+        stress = instantaneous if cfg.imprint_on_instantaneous else smoothed
+        alarm: str | None = None
+        if stress >= cfg.s_crit:
+            alarm = "stress"
+        elif cfg.slip_alarm_steps > 0 and self.slip_streak >= cfg.slip_alarm_steps:
+            alarm = "slip"
         return HomeostatReading(
             instantaneous=instantaneous,
             smoothed=smoothed,
             components=components,
-            critical=smoothed >= cfg.s_crit,
+            critical=alarm is not None,
+            alarm=alarm,
         )
 
 

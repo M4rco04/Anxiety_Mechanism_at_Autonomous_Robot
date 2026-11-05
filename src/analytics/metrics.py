@@ -116,6 +116,15 @@ def setup_datacollector(model: Any) -> mesa.DataCollector:
     return collector
 
 
+def fears_safe_ground(rover: Any, level: float = 0.1) -> bool:
+    """Panic indicator: the rover fears plain safe regolith."""
+
+    from src.environment.terrain import SafeRegolith
+    from src.model.types import hex_to_rgb
+
+    return rover.fear_intensity(hex_to_rgb(SafeRegolith.color)) >= level
+
+
 def collect_rover_metrics(rover: Any) -> dict[str, Any]:
     mean_stress = (
         rover.stress_sum / rover.stress_samples if rover.stress_samples else 0.0
@@ -150,6 +159,15 @@ def collect_rover_metrics(rover: Any) -> dict[str, Any]:
         "blocked_moves": int(rover.blocked_moves),
         "collisions": int(rover.collisions),
         "overturns": int(rover.overturns),
+        "recoveries": int(rover.recoveries),
+        "digging_out": bool(rover.is_digging),
+        "waypoints_reached": int(rover.waypoints_reached)
+        + int(rover.mission_status == "goal_reached"),
+        "stuck_events": int(rover.stuck_events),
+        "context_imprints": int(rover.context_imprints),
+        "fears_safe_ground": fears_safe_ground(rover),
+        "charging_steps": int(rover.charging_steps),
+        "energy_charged": float(rover.energy_charged),
         "destroyed": bool(rover.is_destroyed),
         "overturned": bool(rover.is_overturned),
         "goal_reached": rover.mission_status == "goal_reached",
@@ -181,7 +199,8 @@ def collect_episode_metrics(model: Any) -> dict[str, Any]:
             sum(
                 1
                 for rover in rovers
-                if not rover.is_destroyed and not rover.is_overturned
+                if not rover.is_destroyed
+                and not rover.is_overturned
             )
             / n
             if n
@@ -209,6 +228,16 @@ def collect_episode_metrics(model: Any) -> dict[str, Any]:
         "blocked_moves_total": sum(r.blocked_moves for r in rovers),
         "collisions": sum(r.collisions for r in rovers),
         "overturns": sum(r.overturns for r in rovers),
+        "recoveries": sum(r.recoveries for r in rovers),
+        "waypoints_reached": sum(
+            r.waypoints_reached + int(r.mission_status == "goal_reached")
+            for r in rovers
+        ),
+        "stuck_events": sum(r.stuck_events for r in rovers),
+        "context_imprints": sum(r.context_imprints for r in rovers),
+        "fears_safe_ground": sum(1 for r in rovers if fears_safe_ground(r)),
+        "charging_steps": sum(r.charging_steps for r in rovers),
+        "energy_charged": sum(r.energy_charged for r in rovers),
         "destroyed": sum(1 for r in rovers if r.is_destroyed),
         "overturned": sum(1 for r in rovers if r.is_overturned),
         "goal_reached": sum(

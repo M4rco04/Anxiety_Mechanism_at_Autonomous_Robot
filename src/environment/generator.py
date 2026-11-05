@@ -36,7 +36,9 @@ class MarsMapGenerator:
         self.rng = random.Random(self.seed)
 
         # Noise layers retain the original board-generation contract.
-        self.noise1 = PerlinNoise(octaves=3, seed=self.seed)
+        # PerlinNoise treats seed=0 as "no seed" and picks a random one, so
+        # seed 0 would give a different map every run. Map 0 to a fixed value.
+        self.noise1 = PerlinNoise(octaves=3, seed=self.seed or 1_000_001)
         self.noise2 = PerlinNoise(octaves=8, seed=self.seed + 1)
         self.noise3 = PerlinNoise(octaves=4, seed=self.seed + 2)
         self.noise4 = PerlinNoise(octaves=12, seed=self.seed + 3)

@@ -30,11 +30,6 @@ class SwarmBroadcaster:
         self.radio = RadioModule(model, self.range_hex, self.enabled)
         self._outbox: deque[RadioPacket] = deque()
         self.total_sent = 0
-        self.total_delivered = 0
-
-    @property
-    def pending(self) -> int:
-        return len(self._outbox)
 
     def broadcast(self, packet: RadioPacket) -> bool:
         if not self.enabled:
@@ -65,7 +60,6 @@ class SwarmBroadcaster:
                         position=receiver.pos,
                         signature=packet.signature,
                     )
-        self.total_delivered += delivered
         model.radio_packets_received += delivered
         return delivered
 

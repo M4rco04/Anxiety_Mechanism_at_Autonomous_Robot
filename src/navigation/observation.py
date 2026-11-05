@@ -45,6 +45,7 @@ def build_observation(rover: Pioneer3DXAgent) -> Observation:
             visible[position] = _terrain_observation(rover, position, terrain)
 
     rover.model.mark_discovered(positions)
+    rover.known_terrain.update(visible)
 
     coverage_visited, coverage_discovered = rover.model.coverage()
     current_terrain = rover.model.terrain_at(rover.pos)
@@ -53,6 +54,30 @@ def build_observation(rover: Pioneer3DXAgent) -> Observation:
         if current_terrain is not None
         else None
     )
+
+    # A swarm shares visited cells over the radio, so its rovers do not
+    # explore the same area twice.
+    visited = set(rover.visited)
+    config = rover.model.config
+    if (
+        rover.navigation_mode == "swarm_emotional"
+        and config.radio_enabled
+        and config.swarm_share_map
+    ):
+        for other in rover.model.rovers_in_range(rover.pos, int(config.R_radio)):
+            visited.update(other.visited)
+
+    # Swarm rovers report their positions over the radio. A destroyed or
+    # finished rover no longer transmits.
+    swarm_peers: dict[int, tuple[int, int]] = {}
+    if rover.navigation_mode == "swarm_emotional" and config.radio_enabled:
+        for other in rover.model.rovers_in_range(rover.pos, int(config.R_radio)):
+            if (
+                other is not rover
+                and other.navigation_mode == "swarm_emotional"
+                and other.is_active
+            ):
+                swarm_peers[other.unique_id] = other.pos
 
     fear_view: dict[tuple[int, int, int], FearView] = rover.fear_map()
     retreat_required = (
@@ -69,7 +94,7 @@ def build_observation(rover: Pioneer3DXAgent) -> Observation:
         visible_cells=visible,
         lidar_obstacles=frozenset(lidar),
         rgb_signatures=rgb,
-        visited=frozenset(rover.visited),
+        visited=frozenset(visited),
         anxiety_memory=fear_view,
         coverage_visited=coverage_visited,
         coverage_discovered=coverage_discovered,
@@ -80,6 +105,7 @@ def build_observation(rover: Pioneer3DXAgent) -> Observation:
         else True,
         retreat_required=retreat_required,
         current_terrain=current,
+        swarm_peers=swarm_peers,
     )
 
 

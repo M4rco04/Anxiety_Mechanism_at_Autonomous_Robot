@@ -8,6 +8,7 @@ navigation strategy; this is the handoff point for Karol's algorithms.
 from __future__ import annotations
 
 import math
+from collections import Counter, deque
 from typing import TYPE_CHECKING
 
 import mesa
@@ -27,6 +28,7 @@ from src.model.types import (
     clamp,
     hex_distance,
     hex_vector,
+    rgb_distance,
 )
 from src.navigation.observation import build_observation
 from src.navigation.types import NavigationDecision, NavigationStrategy
@@ -60,6 +62,9 @@ class Pioneer3DXAgent(mesa.Agent):
         # Physical state
         self.battery = 100.0
         self.battery_prev = 100.0
+        self.hull_prev = 100.0
+        self.wheel_prev = 100.0
+        self.last_instant_stress = 0.0
         self.base_speed = 1.0
         self.target_speed = 1.0
         self.current_speed = 1.0
@@ -77,8 +82,23 @@ class Pioneer3DXAgent(mesa.Agent):
         # Environment exposure / safety
         self.shadow_exposure_time = 0
         self.dust_exposure_time = 0
-        self.gyro_alarm = False
         self.is_overturned = False
+        self.recovery_steps_left = 0
+        self.recoveries = 0
+        self.waypoints_left = 0
+        self.waypoints_reached = 0
+        self.is_digging = False
+        self.dig_steps = 0
+        self.stuck_events = 0
+        # Short-term memory: (position, terrain signature) of the last steps.
+        self.short_term_memory: deque[tuple[Position, RGB]] = deque(
+            maxlen=max(1, int(config.stm_steps))
+        )
+        self.exposures: Counter[RGB] = Counter()
+        self.context_imprints = 0
+        self.charging = False
+        self.charging_steps = 0
+        self.energy_charged = 0.0
         self.is_destroyed = False
 
         # Mission state
@@ -87,6 +107,8 @@ class Pioneer3DXAgent(mesa.Agent):
         self.exploration_budget = int(config.exploration_budget)
         self.coverage_target = float(config.coverage_target)
         self.path: list[Position] = []
+        # Terrain the rover has seen with its cameras/LIDAR (for route planning).
+        self.known_terrain: dict = {}
         self.visited: set[Position] = set()
         self.moves = 0
         self.backtracks = 0
@@ -98,7 +120,6 @@ class Pioneer3DXAgent(mesa.Agent):
         self.critical_events = 0
         self.goal_step: int | None = None
         self.previous_position: Position | None = None
-        self.previous_terrain_type: TerrainType | None = None
         self.current_terrain_type: TerrainType | None = None
         self.last_effect: dict = {}
         self.last_action_reason = ""
@@ -125,7 +146,9 @@ class Pioneer3DXAgent(mesa.Agent):
     # ------------------------------------------------------------------
     @property
     def is_active(self) -> bool:
-        if self.is_destroyed or self.is_overturned or self.battery <= 0.0:
+        if self.is_destroyed or self.battery <= 0.0:
+            return False
+        if self.is_overturned and self.recovery_steps_left <= 0:
             return False
         return self.mission_status not in {
             "goal_reached",
@@ -138,10 +161,6 @@ class Pioneer3DXAgent(mesa.Agent):
     @property
     def current_terrain(self) -> TerrainPatch | None:
         return self.model.terrain_at(self.pos)
-
-    @property
-    def emotional_mode(self) -> bool:
-        return self.emotional_enabled
 
     @property
     def current_slope(self) -> float:
@@ -340,9 +359,12 @@ class Pioneer3DXAgent(mesa.Agent):
     def broadcast_danger(self, signature: RGB, position: Position) -> bool:
         if self.navigation_mode != "swarm_emotional":
             return False
+        if not self.model.config.swarm_share_fear:
+            return False
         if not getattr(self.model, "swarm", None):
             return False
-        intensity = clamp(self.stress_level / 100.0, 0.1, 1.0)
+        level = max(self.stress_level, self.last_instant_stress)
+        intensity = clamp(level / 100.0, 0.1, 1.0)
         packet = self.model.swarm.radio.create_packet(
             self, signature, position, intensity
         )
@@ -359,6 +381,8 @@ class Pioneer3DXAgent(mesa.Agent):
         hull_condition: float,
         wheel_condition: float,
         current_slope: float,
+        hull_damage: float = 0.0,
+        wheel_damage: float = 0.0,
     ) -> HomeostatReading:
         reading = self.homeostat.update(
             delta_battery=delta_battery,
@@ -367,8 +391,11 @@ class Pioneer3DXAgent(mesa.Agent):
             hull_condition=hull_condition,
             wheel_condition=wheel_condition,
             current_slope=current_slope,
+            hull_damage=hull_damage,
+            wheel_damage=wheel_damage,
         )
         self.stress_level = reading.smoothed
+        self.last_instant_stress = reading.instantaneous
         return reading
 
     # ------------------------------------------------------------------
@@ -385,14 +412,23 @@ class Pioneer3DXAgent(mesa.Agent):
             return
         if self.is_destroyed:
             return
+        if self.is_overturned and self.recovery_steps_left > 0:
+            self._recovery_step()
+            return
+        if self.is_digging:
+            self._dig_step()
+            return
         if self.is_overturned or self.battery <= 0.0:
             self._update_mission_status()
             return
+        if self._should_charge():
+            self._charge_step()
+            return
 
         self.battery_prev = self.battery
+        self.hull_prev = self.hull_condition
+        self.wheel_prev = self.wheel_condition
         self.previous_position = self.pos
-        self.previous_terrain_type = self.current_terrain_type
-        self.gyro_alarm = False
         self.target_speed = 0.0
         self.current_speed = 0.0
 
@@ -419,6 +455,10 @@ class Pioneer3DXAgent(mesa.Agent):
             }:
                 self.mission_status = decision.status
                 self.status_reason = decision.reason
+            elif decision is not None and decision.status == "waiting":
+                # Standing still on purpose (e.g. waiting for the swarm).
+                self.mission_status = "active"
+                self.status_reason = decision.reason
             elif self.target is not None and self.pos == self.target:
                 self.mission_status = "goal_reached"
                 self.status_reason = "target reached"
@@ -435,6 +475,8 @@ class Pioneer3DXAgent(mesa.Agent):
             hull_condition=self.hull_condition,
             wheel_condition=self.wheel_condition,
             current_slope=self.current_slope,
+            hull_damage=max(0.0, self.hull_prev - self.hull_condition),
+            wheel_damage=max(0.0, self.wheel_prev - self.wheel_condition),
         )
         self.stress_sum += self.stress_level
         self.stress_samples += 1
@@ -501,11 +543,20 @@ class Pioneer3DXAgent(mesa.Agent):
             "vision_after": self.vision_range,
         }
 
+        if self.is_digging:
+            self.stuck_events += 1
+            self.model.record_event(
+                "stuck", rover_id=self.unique_id, position=self.pos
+            )
+
         if terrain.terrain_type == TerrainType.BOULDERS:
             self.collisions += 1
         if self.is_overturned and not self._overturn_counted:
             self._overturn_counted = True
             self.overturns += 1
+            self.recovery_steps_left = int(
+                self.model.config.overturn_recovery_steps
+            )
             self.model.record_event(
                 "overturned", rover_id=self.unique_id, position=self.pos
             )
@@ -553,7 +604,30 @@ class Pioneer3DXAgent(mesa.Agent):
             self.dust_exposure_time = 0
             self.vision_range = self.base_vision_range
 
+    def _remember_circumstances(self) -> None:
+        signature = self.current_signature()
+        if signature is not None:
+            self.short_term_memory.append((self.pos, signature))
+            self.exposures[signature] += 1
+
     def _handle_anxiety(self, reading: HomeostatReading) -> None:
+        self._remember_circumstances()
+        homeostat = self.model.config.homeostat
+        if homeostat.imprint_on_instantaneous:
+            # Acute event: imprint the cell the rover stands on, unless this
+            # terrain is already strongly feared (avoids imprinting every step).
+            if reading.critical and self.emotional_enabled:
+                signature = self.current_signature()
+                if (
+                    signature is not None
+                    and self.fear_intensity(signature) < homeostat.reimprint_below
+                ):
+                    self._imprint(signature)
+            self.stress_armed = self.stress_level < (
+                homeostat.s_crit * homeostat.rearm_factor
+            )
+            return
+
         if reading.critical and self.stress_armed:
             if self.emotional_enabled:
                 signature = self.current_signature()
@@ -579,6 +653,217 @@ class Pioneer3DXAgent(mesa.Agent):
         ):
             self.stress_armed = True
 
+    def _should_charge(self) -> bool:
+        config = self.model.config
+        terrain = self.current_terrain
+        on_safe_ground = (
+            terrain is not None
+            and terrain.terrain_type == TerrainType.SAFE_REGOLITH
+        )
+        if not config.solar_charging or config.solar_charge_rate <= 0 or not on_safe_ground:
+            self.charging = False
+            return False
+        if self.charging:
+            return self.battery < config.solar_charge_stop
+        return self.battery < config.solar_charge_start
+
+    def _charge_step(self) -> None:
+        """Stand still on safe ground and recharge from the solar panels.
+
+        The rover does not want to move (target speed 0), so the homeostat
+        sees no slip and no battery drop and stress decays while resting.
+        """
+
+        config = self.model.config
+        self.charging = True
+        self.battery_prev = self.battery
+        self.previous_position = self.pos
+        self.target_speed = 0.0
+        self.current_speed = 0.0
+        self.battery = min(
+            float(config.solar_charge_stop),
+            self.battery + float(config.solar_charge_rate),
+        )
+        self.energy_charged += self.battery - self.battery_prev
+        self.charging_steps += 1
+        self.last_action_reason = "charging from solar panels"
+
+        reading = self.update_homeostat(
+            delta_battery=0.0,
+            target_speed=0.0,
+            current_speed=0.0,
+            hull_condition=self.hull_condition,
+            wheel_condition=self.wheel_condition,
+            current_slope=self.current_slope,
+        )
+        self.stress_sum += self.stress_level
+        self.stress_samples += 1
+        if reading.critical:
+            self.critical_events += 1
+        self._handle_anxiety(reading)
+
+        if self.battery >= config.solar_charge_stop:
+            self.charging = False
+            self.mission_status = "active"
+            self.status_reason = "battery charged"
+            self.model.record_event(
+                "charged", rover_id=self.unique_id, position=self.pos
+            )
+        else:
+            self.mission_status = "charging"
+            self.status_reason = "charging from solar panels"
+
+    def _recovery_step(self) -> None:
+        """Spend one step getting back on the wheels after an overturn.
+
+        The rover stays in place: it wants to drive (target speed) but cannot
+        (current speed 0), drains battery and still stands on the slope, so
+        the homeostat keeps rising and can imprint fear of this terrain.
+        """
+
+        self.battery_prev = self.battery
+        self.previous_position = self.pos
+        self.target_speed = self.base_speed
+        self.current_speed = 0.0
+        self.battery = clamp(
+            self.battery - float(self.model.config.overturn_recovery_battery),
+            0.0,
+            100.0,
+        )
+        self.recovery_steps_left -= 1
+        self.last_action_reason = "recovering after overturn"
+
+        reading = self.update_homeostat(
+            delta_battery=max(0.0, self.battery_prev - self.battery),
+            target_speed=self.target_speed,
+            current_speed=self.current_speed,
+            hull_condition=self.hull_condition,
+            wheel_condition=self.wheel_condition,
+            current_slope=self.current_slope,
+        )
+        self.stress_sum += self.stress_level
+        self.stress_samples += 1
+        if reading.critical:
+            self.critical_events += 1
+        self._handle_anxiety(reading)
+        self._check_destruction()
+
+        if not self.is_destroyed and self.recovery_steps_left <= 0:
+            self.is_overturned = False
+            self._overturn_counted = False
+            self.recoveries += 1
+            self.mission_status = "active"
+            self.status_reason = "recovered after overturn"
+            self.model.record_event(
+                "recovered", rover_id=self.unique_id, position=self.pos
+            )
+        else:
+            self._update_mission_status()
+
+    def _imprint(self, signature: RGB) -> None:
+        self.learn_fear(
+            signature, intensity=1.0, source="self", source_position=self.pos
+        )
+        self.model.record_event(
+            "fear_imprint",
+            rover_id=self.unique_id,
+            position=self.pos,
+            signature=signature,
+        )
+        if self.navigation_mode == "swarm_emotional":
+            self.broadcast_danger(signature, self.pos)
+        self._imprint_context(signature)
+
+    def _imprint_context(self, signature: RGB) -> None:
+        """Associate the circumstances that preceded the alarm.
+
+        Everything in short-term memory before the current cell is imprinted
+        with ``context_imprint_weight``, weakened for familiar terrain
+        (latent inhibition), so the rover avoids also what led to the danger.
+        """
+
+        config = self.model.config
+        weight = float(config.context_imprint_weight)
+        if weight <= 0:
+            return
+        tolerance = float(config.fear_rgb_tolerance)
+        done: list[RGB] = []
+        for position, context in list(self.short_term_memory)[:-1]:
+            if rgb_distance(context, signature) <= tolerance:
+                continue
+            if any(rgb_distance(context, other) <= tolerance for other in done):
+                continue
+            done.append(context)
+            intensity = weight * math.exp(
+                -self.exposures[context] / float(config.habituation_steps)
+            )
+            if intensity < config.min_context_intensity:
+                continue
+            if self.fear_intensity(context) >= intensity:
+                continue
+            self.learn_fear(
+                context, intensity=intensity, source="context", source_position=position
+            )
+            self.context_imprints += 1
+
+    def _dig_step(self) -> None:
+        """Wheels spin in loose sand: the rover drives but does not move.
+
+        After ``sand_stuck_min_steps`` the rover gets out with a chance that
+        falls with wheel wear, and at the latest after ``sand_stuck_max_steps``.
+        """
+
+        config = self.model.config
+        self.battery_prev = self.battery
+        self.hull_prev = self.hull_condition
+        self.wheel_prev = self.wheel_condition
+        self.previous_position = self.pos
+        self.target_speed = self.base_speed
+        self.current_speed = 0.0
+        self.battery = clamp(
+            self.battery - float(config.sand_stuck_battery), 0.0, 100.0
+        )
+        self.wheel_condition = clamp(
+            self.wheel_condition - float(config.sand_stuck_wheel_wear), 0.0, 100.0
+        )
+        self.dig_steps += 1
+        self.last_action_reason = "stuck in loose sand, digging out"
+
+        reading = self.update_homeostat(
+            delta_battery=max(0.0, self.battery_prev - self.battery),
+            target_speed=self.target_speed,
+            current_speed=self.current_speed,
+            hull_condition=self.hull_condition,
+            wheel_condition=self.wheel_condition,
+            current_slope=self.current_slope,
+            wheel_damage=max(0.0, self.wheel_prev - self.wheel_condition),
+        )
+        self.stress_sum += self.stress_level
+        self.stress_samples += 1
+        if reading.critical:
+            self.critical_events += 1
+        self._handle_anxiety(reading)
+        self._check_destruction()
+
+        if self.is_destroyed:
+            return
+        escape_chance = float(config.sand_escape_probability) * (
+            self.wheel_condition / 100.0
+        )
+        if self.dig_steps >= int(config.sand_stuck_max_steps) or (
+            self.dig_steps >= int(config.sand_stuck_min_steps)
+            and float(self.model.rng.random()) < escape_chance
+        ):
+            self.is_digging = False
+            self.dig_steps = 0
+            self.mission_status = "active"
+            self.status_reason = "dug out of the sand"
+            self.model.record_event(
+                "dug_out", rover_id=self.unique_id, position=self.pos
+            )
+        else:
+            self.mission_status = "digging_out"
+
     def _check_destruction(self) -> None:
         if (
             self.battery <= 0.0
@@ -596,7 +881,11 @@ class Pioneer3DXAgent(mesa.Agent):
         if self.is_destroyed:
             self.mission_status = "destroyed"
         elif self.is_overturned:
-            self.mission_status = "overturned"
+            self.mission_status = (
+                "recovering" if self.recovery_steps_left > 0 else "overturned"
+            )
+        elif self.is_digging:
+            self.mission_status = "digging_out"
         elif self.battery <= 0.0:
             self.mission_status = "destroyed"
         elif self.target is not None and self.pos == self.target:
@@ -611,18 +900,6 @@ class Pioneer3DXAgent(mesa.Agent):
                 "goal_reached", rover_id=self.unique_id, position=self.pos
             )
 
-    # ------------------------------------------------------------------
-    # Compatibility helpers
-    # ------------------------------------------------------------------
-    def move(self) -> None:
-        """Deprecated compatibility wrapper.
-
-        Movement is selected by the strategy inside :meth:`step`.  Calling
-        this method simply executes a complete step and must not be used by
-        new code.
-        """
-
-        self.step()
 
 
 __all__ = ["Pioneer3DXAgent"]
