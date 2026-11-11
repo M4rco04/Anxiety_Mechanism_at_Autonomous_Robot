@@ -28,7 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--variants",
         nargs="+",
         default=["online", "emotional", "swarm_emotional"],
-        choices=("scaffold", "online", "emotional", "swarm_emotional"),
+        choices=("scaffold", "online", "emotional", "fuzzy", "swarm_emotional"),
     )
     parser.add_argument(
         "--mission-modes",

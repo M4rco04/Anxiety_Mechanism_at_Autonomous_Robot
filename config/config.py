@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any
 
-NAVIGATION_MODES = ("scaffold", "online", "emotional", "swarm_emotional")
+NAVIGATION_MODES = ("scaffold", "online", "emotional", "fuzzy", "swarm_emotional")
 MISSION_MODES = ("exploration", "goal_navigation")
 
 DEFAULT_TERRAIN_COSTS: dict[str, float] = {
@@ -76,6 +76,16 @@ class HomeostatConfig:
     # imprint even when the stress is below s_crit. 0 steps = disabled.
     slip_alarm: float = 0.7
     slip_alarm_steps: int = 2
+    # Accumulated-stress alarm (chronic danger): stress below s_crit adds up
+    # per terrain. Every step without an acute alarm adds
+    # max(0, S_loss - chronic_rest) to the sum of the terrain the rover
+    # stands on; when the sum reaches chronic_alarm, that terrain is
+    # imprinted like after an acute event. So terrain that harms slowly
+    # (dust, sand, a deepening shadow) is learned too, and earlier. S_loss
+    # is S_inst without the slope term: only real losses add up.
+    # chronic_alarm = 0 disables it.
+    chronic_rest: float = 10.0
+    chronic_alarm: float = 40.0
 
     @classmethod
     def specification(cls) -> HomeostatConfig:
@@ -88,6 +98,7 @@ class HomeostatConfig:
             damage_based=False,
             imprint_on_instantaneous=False,
             slip_alarm_steps=0,
+            chronic_alarm=0.0,
         )
 
     def validate(self) -> None:
@@ -101,6 +112,8 @@ class HomeostatConfig:
             "s_crit": self.s_crit,
             "w_hull_damage": self.w_hull_damage,
             "w_wheel_damage": self.w_wheel_damage,
+            "chronic_rest": self.chronic_rest,
+            "chronic_alarm": self.chronic_alarm,
         }
         for name, value in non_negative.items():
             if not math.isfinite(value) or value < 0:
@@ -138,6 +151,22 @@ class SimulationConfig:
     coverage_target: float = 0.8
     allow_exploration_fallback: bool = False
     goal_target_fraction: float = 0.7
+    # Exploration starts around the rover: it drives to the nearest unseen
+    # cell, and the explored area grows outwards from the start like a disc.
+    # Unseen cells up to ``explore_home_slack`` cells farther from the start
+    # than the nearest unseen one cost nothing extra; each cell beyond that
+    # costs ``explore_home_weight``. Weight 0 = nearest unseen cell only
+    # (on open ground the rover then drifts away in a line).
+    explore_home_weight: float = 1.0
+    explore_home_slack: float = 4.0
+    # Exploration is optional, so a rover does not cross much terrain it
+    # fears (or distrusts) only to see more: routes whose summed aversion
+    # exceeds this many fully feared cells are not taken. When nothing else
+    # is left, the rover stops exploring.
+    explore_max_aversion: float = 1.0
+    # Before driving onto a neighbour it has never seen (outside the camera
+    # field of view), the rover turns in place to look at it first.
+    look_before_step: bool = True
 
     # Sensors
     vision_range: int = 3
@@ -155,6 +184,12 @@ class SimulationConfig:
     radio_fear_gain: float = 0.8
     retreat_fear_threshold: float = 0.5
     allow_forced_fear_visit: bool = True
+    # Fuzzy rover (no learning): expert rules give every cell a caution
+    # 0..1 (src/navigation/fuzzy.py). ``fuzzy_weight`` * caution is the extra
+    # route cost; the rover steps back when the retreat rule fires at least
+    # to ``fuzzy_retreat_level``.
+    fuzzy_weight: float = 30.0
+    fuzzy_retreat_level: float = 0.5
 
     # Short-term memory (Bielecki et al. 2017, 2025): the rover keeps the
     # circumstances of the last ``stm_steps`` steps. On an alarm the current
@@ -283,6 +318,12 @@ class SimulationConfig:
             raise ValueError("fear_weight and fear_decay must be >= 0")
         if self.fear_rgb_tolerance < 0:
             raise ValueError("fear_rgb_tolerance must be >= 0")
+        if self.explore_home_weight < 0 or self.explore_home_slack < 0:
+            raise ValueError("explore_home_weight and explore_home_slack must be >= 0")
+        if self.explore_max_aversion < 0:
+            raise ValueError("explore_max_aversion must be >= 0")
+        if self.fuzzy_weight < 0 or not 0.0 <= self.fuzzy_retreat_level <= 1.0:
+            raise ValueError("fuzzy_weight >= 0 and fuzzy_retreat_level in [0, 1]")
         if self.R_radio < 0:
             raise ValueError("R_radio must be >= 0")
         if not 1 <= self.swarm_cohesion_radius <= max(1, self.R_radio):

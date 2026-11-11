@@ -22,6 +22,7 @@ from src.model.model import MarsSimulation
 PALETTE = {
     "online": "#8fb8ff",
     "emotional": "#f2a65a",
+    "fuzzy": "#b594e6",
     "swarm_emotional": "#72e0b0",
     "scaffold": "#b8c0cc",
 }

@@ -96,11 +96,22 @@ def test_radio_range_and_no_damage():
     assert far.battery == before
 
 
-def test_strategy_fear_cost_uses_decayed_intensity():
-    from src.agents.fear import FearView
-    from src.navigation.strategies import _match_fear_intensity
+def test_strategy_fear_cost_uses_decayed_intensity(safe_model):
+    import math
+    from dataclasses import replace
 
-    memory = {(255, 102, 102): FearView((255, 102, 102), 0.9, 0, None, "self")}
-    assert _match_fear_intensity((255, 102, 102), memory, 24.0) == 0.9
-    assert _match_fear_intensity((250, 100, 100), memory, 24.0) == 0.9
-    assert _match_fear_intensity((0, 0, 0), memory, 24.0) == 0.0
+    from src.navigation.observation import build_observation
+    from src.navigation.strategies import EmotionalStrategy
+
+    rover = safe_model.rovers()[0]
+    rover.learn_fear((255, 102, 102), intensity=0.9, source="self")
+    safe_model.step_count = 100
+    config = safe_model.config
+    cost = EmotionalStrategy(config)._cell_cost(rover, build_observation(rover))
+    cell = rover.known_terrain[rover.pos]
+
+    expected = config.fear_weight * 0.9 * math.exp(-config.fear_decay * 100)
+    assert cost(replace(cell, rgb_signature=(255, 102, 102))) == pytest.approx(expected)
+    # A similar colour (within the tolerance) is the same feared terrain.
+    assert cost(replace(cell, rgb_signature=(250, 100, 100))) == pytest.approx(expected)
+    assert cost(replace(cell, rgb_signature=(0, 0, 0))) == 0.0

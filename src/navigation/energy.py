@@ -12,9 +12,9 @@ import heapq
 import math
 from collections.abc import Callable
 
-from src.model.types import RGB, Position
+from src.model.types import Position
 from src.navigation.board import HexGridBoard
-from src.navigation.types import NavigationDecision, Observation
+from src.navigation.types import NavigationDecision, Observation, TerrainObservation
 
 SAFE_TERRAIN = "SafeRegolith"
 
@@ -33,12 +33,13 @@ def seek_charging_spot(
     rover,
     observation: Observation,
     board: HexGridBoard,
-    fear_cost: Callable[[RGB | None], float] | None = None,
+    fear_cost: Callable[[TerrainObservation], float] | None = None,
 ) -> NavigationDecision | None:
     """Return the first step towards the nearest known safe cell, if needed.
 
     The route only goes through cells the rover has seen (``known_terrain``).
-    ``fear_cost`` lets emotional strategies avoid terrain they fear.
+    ``fear_cost`` (extra cost of a known cell) lets emotional and fuzzy
+    strategies avoid terrain they fear or distrust.
     Returns ``None`` when charging is not needed or no safe cell is known,
     so the strategy falls back to its normal behaviour.
     """
@@ -75,7 +76,7 @@ def seek_charging_spot(
                 continue
             step_cost = cell.movement_cost
             if fear_cost is not None:
-                step_cost += fear_cost(cell.rgb_signature)
+                step_cost += fear_cost(cell)
             new_cost = cost_so_far + step_cost
             if new_cost < distance.get(neighbour, math.inf):
                 distance[neighbour] = new_cost

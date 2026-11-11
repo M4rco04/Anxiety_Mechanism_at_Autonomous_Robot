@@ -15,6 +15,8 @@ if TYPE_CHECKING:  # pragma: no cover
 def _terrain_observation(
     rover: Pioneer3DXAgent, position, terrain: TerrainPatch
 ) -> TerrainObservation:
+    # The colour is what the camera read (mean of the noisy readings of this
+    # cell), not the true colour; cells seen only by LIDAR have none.
     occupied = rover.model.rover_at(position, exclude_id=rover.unique_id) is not None
     return TerrainObservation(
         position=position,
@@ -23,7 +25,7 @@ def _terrain_observation(
         movement_cost=terrain.movement_cost,
         damage_risk=terrain.damage_risk,
         slope_risk=terrain.slope_risk,
-        rgb_signature=terrain.optical_signature,
+        rgb_signature=rover.perceived.get(position),
         elevation=float(terrain.elevation),
         slope=float(terrain.slope),
         occupied_by_rover=occupied,
@@ -34,6 +36,8 @@ def _terrain_observation(
 def build_observation(rover: Pioneer3DXAgent) -> Observation:
     rgb = rover.read_rgb_cameras()
     lidar = rover.read_lidar()
+    for position, reading in rgb.items():
+        rover.integrate_reading(position, reading)
     positions = set(rgb)
     positions.update(lidar)
     positions.add(rover.pos)
@@ -45,7 +49,11 @@ def build_observation(rover: Pioneer3DXAgent) -> Observation:
             visible[position] = _terrain_observation(rover, position, terrain)
 
     rover.model.mark_discovered(positions)
-    rover.known_terrain.update(visible)
+    known = rover.known_terrain
+    for position, info in visible.items():
+        if position not in known:
+            rover.known_order.append(position)
+        known[position] = info
 
     coverage_visited, coverage_discovered = rover.model.coverage()
     current_terrain = rover.model.terrain_at(rover.pos)
@@ -65,7 +73,17 @@ def build_observation(rover: Pioneer3DXAgent) -> Observation:
         and config.swarm_share_map
     ):
         for other in rover.model.rovers_in_range(rover.pos, int(config.R_radio)):
+            if other is rover or other.navigation_mode != "swarm_emotional":
+                continue
             visited.update(other.visited)
+            # The map itself is shared too: cells a peer has seen are known
+            # (only what is new since the last contact is transferred).
+            synced = rover.map_sync.get(other.unique_id, 0)
+            for position in other.known_order[synced:]:
+                if position not in known:
+                    known[position] = other.known_terrain[position]
+                    rover.known_order.append(position)
+            rover.map_sync[other.unique_id] = len(other.known_order)
 
     # Swarm rovers report their positions over the radio. A destroyed or
     # finished rover no longer transmits.

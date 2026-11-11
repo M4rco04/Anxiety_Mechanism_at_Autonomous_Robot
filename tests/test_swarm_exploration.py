@@ -71,6 +71,7 @@ def test_swarm_stays_within_radio_range():
 def test_rover_regroups_after_losing_contact():
     _model, rovers = _swarm([(5, 20)])
     rover = rovers[0]
+    rover._face(rover.pos, (30, 20))  # cameras look towards the swarm
     rover.strategy.peer_memory = {99: (30, 20)}
     decision = rover.strategy.choose_next(rover, build_observation(rover))
     assert decision is not None

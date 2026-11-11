@@ -34,7 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rovers", type=int, default=3)
     parser.add_argument(
         "--navigation-mode",
-        choices=("scaffold", "online", "emotional", "swarm_emotional"),
+        choices=("scaffold", "online", "emotional", "fuzzy", "swarm_emotional"),
         default="scaffold",
     )
     parser.add_argument(

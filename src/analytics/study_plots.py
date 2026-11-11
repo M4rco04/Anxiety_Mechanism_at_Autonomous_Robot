@@ -21,13 +21,15 @@ import pandas as pd
 
 from src.analytics.analysis_plots import TEXT, TEXT_MUTED, VARIANT_COLORS, _save, _style
 
-BLUE, ORANGE, AQUA = VARIANT_COLORS
+BLUE, ORANGE, AQUA, VIOLET = VARIANT_COLORS
 
 
 def _family_color(condition: str) -> str:
     name = condition.lower()
     if name.startswith("swarm"):
         return AQUA
+    if name.startswith("fuzzy"):
+        return VIOLET
     if name.startswith("plain") or "plain" in name:
         return BLUE
     return ORANGE

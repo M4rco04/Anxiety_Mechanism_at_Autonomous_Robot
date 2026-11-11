@@ -1,8 +1,9 @@
 """Public navigation contracts.
 
-Navigation strategies are deliberately independent from Mesa and from the
-rover's physical state.  A strategy receives an immutable observation and
-returns the next cell; the rover validates and executes the move.
+A strategy receives the rover and an immutable observation of this step and
+returns the next cell; the rover validates and executes the move. Strategies
+read the rover's memory (``known_terrain``, ``path``, fear memory) and state
+(battery, condition, stress) but never change the rover or the world.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from src.agents.fear import FearView
 from src.model.types import RGB, Position
 
 MissionMode = Literal["exploration", "goal_navigation"]
-NavigationMode = Literal["online", "emotional", "swarm_emotional", "scaffold"]
+NavigationMode = Literal["online", "emotional", "fuzzy", "swarm_emotional", "scaffold"]
 
 
 @dataclass(frozen=True)
@@ -68,8 +69,11 @@ class NavigationDecision:
         "blocked",
         "forced_fear_visit",
         "waiting",
+        "turning",
     ] = "moving"
     metadata: Mapping[str, float] = field(default_factory=dict)
+    # ``turning``: the neighbour the rover turns its cameras to (no move).
+    face: Position | None = None
 
 
 class NavigationStrategy(Protocol):

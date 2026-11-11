@@ -1,9 +1,10 @@
-"""Compare three rover control variants over n simulations.
+"""Compare the rover control variants over n simulations.
 
 Variants:
   * Plain algorithm    - ``online``,          1 rover, no anxiety
   * Anxiety mechanism  - ``emotional``,       1 rover, conditioned anxiety
   * Rover swarm        - ``swarm_emotional``, 3 rovers, anxiety shared by radio
+  * Fuzzy rules        - ``fuzzy``,           1 rover, expert rules, no learning
 
 Tests:
   1. exploration      - how much terrain is discovered and how many rovers survive,
@@ -27,7 +28,7 @@ from typing import Any
 import pandas as pd
 
 from config.config import HomeostatConfig, SimulationConfig
-from src.analytics.benchmark import wilson_interval
+from src.analytics.benchmark import rate_interval, wilson_interval
 from src.analytics.metrics import collect_episode_metrics, collect_rover_metrics
 from src.model.model import MarsSimulation
 
@@ -35,6 +36,7 @@ VARIANTS: tuple[tuple[str, str, int], ...] = (
     ("Plain algorithm", "online", 1),
     ("Anxiety mechanism", "emotional", 1),
     ("Rover swarm", "swarm_emotional", 3),
+    ("Fuzzy rules", "fuzzy", 1),
 )
 VARIANT_NAMES = [name for name, _, _ in VARIANTS]
 TESTS: dict[str, str] = {
@@ -199,7 +201,7 @@ def summarize(episodes: pd.DataFrame, waypoints: int) -> pd.DataFrame:
             n = len(group)
             rovers_total = int(group["rovers"].sum())
             survived = int(group["rovers_survived"].sum())
-            low, high = wilson_interval(survived, rovers_total)
+            low, high = rate_interval(group["rovers_survived"], group["rovers"])
             clean = int(group["all_survived"].sum())
             clean_low, clean_high = wilson_interval(clean, n)
             row: dict[str, Any] = {
@@ -233,7 +235,7 @@ def summarize(episodes: pd.DataFrame, waypoints: int) -> pd.DataFrame:
                 )
             else:
                 at_goal = int(group["rovers_at_goal"].sum())
-                goal_low, goal_high = wilson_interval(at_goal, rovers_total)
+                goal_low, goal_high = rate_interval(group["rovers_at_goal"], group["rovers"])
                 all_goal = int(group["all_at_goal"].sum())
                 all_low, all_high = wilson_interval(all_goal, n)
                 done = group[group["all_at_goal"]]
@@ -358,7 +360,7 @@ COLUMN_LEGEND: dict[str, dict[str, str]] = {
         "steps / end_reason": "Simulation length and why it ended.",
     },
     "summary.csv (one row per variant and test)": {
-        "rover_survival_rate (+ ci_low/high)": "Share of rovers that survived, 95% Wilson interval.",
+        "rover_survival_rate (+ ci_low/high)": "Share of rovers that survived, 95% interval.",
         "runs_without_losses_rate": "Share of simulations where all rovers survived.",
         "terrain_discovered_*": "Discovered terrain: mean, standard deviation, min and max [%].",
         "route_completed_rate": "Share of rovers that completed the route (goal test).",
@@ -392,8 +394,10 @@ def write_report(
         ),
         "",
         (
-            "Brackets give the 95% Wilson confidence interval. A rover *survived* when at the "
-            "end it was not destroyed or overturned for good."
+            "Brackets give the 95% confidence interval (Wilson; for several rovers per "
+            "simulation a bootstrap over whole simulations, because rovers on one map are "
+            "not independent). A rover *survived* when at the end it was not destroyed or "
+            "overturned for good."
         ),
         "",
     ]

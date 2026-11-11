@@ -3,8 +3,8 @@
 The rover replans every step with A* over the terrain it knows
 (``rover.known_terrain``). Unknown cells are assumed easy (cost 1, the
 usual free-space assumption of planetary rovers), known obstacles are
-skipped. Emotional strategies add the fear cost of each cell, so the plain
-and the emotional rover differ only by the anxiety mechanism.
+skipped. Emotional strategies add the fear cost of each cell (the fuzzy
+strategy its caution), so the variants differ only in how they value terrain.
 """
 
 from __future__ import annotations
@@ -13,9 +13,9 @@ import heapq
 import math
 from collections.abc import Callable
 
-from src.model.types import RGB, Position
+from src.model.types import Position
 from src.navigation.board import HexGridBoard
-from src.navigation.types import Observation
+from src.navigation.types import Observation, TerrainObservation
 
 UNKNOWN_CELL_COST = 1.0
 
@@ -25,9 +25,12 @@ def plan_first_step(
     observation: Observation,
     board: HexGridBoard,
     target: Position,
-    fear_cost: Callable[[RGB | None], float] | None = None,
+    fear_cost: Callable[[TerrainObservation], float] | None = None,
 ) -> tuple[Position, float] | None:
-    """Return ``(first step, fear cost of that step)`` of the cheapest route."""
+    """Return ``(first step, fear cost of that step)`` of the cheapest route.
+
+    ``fear_cost`` maps a known cell to its extra cost (fear or caution).
+    """
 
     start = observation.position
     first_actions = board.actions(start, observation)
@@ -43,7 +46,7 @@ def plan_first_step(
             return math.inf
         cost = info.movement_cost
         if fear_cost is not None:
-            cost += fear_cost(info.rgb_signature)
+            cost += fear_cost(info)
         return cost
 
     distance: dict[Position, float] = {start: 0.0}
@@ -59,7 +62,7 @@ def plan_first_step(
             step = first[position]
             info = known.get(step)
             fear = (
-                fear_cost(info.rgb_signature)
+                fear_cost(info)
                 if fear_cost is not None and info is not None
                 else 0.0
             )

@@ -208,7 +208,8 @@ def main(argv: list[str] | None = None) -> None:
         default="scaffold",
         choices=NAVIGATION_MODES,
         help="Rover algorithm: scaffold (non-scientific walker), online, "
-        "emotional (stress/fear) or swarm_emotional (fear shared by radio).",
+        "emotional (stress/fear), fuzzy (expert fuzzy rules, no learning) or "
+        "swarm_emotional (fear shared by radio).",
     )
     parser.add_argument("--mission-mode", default="exploration", choices=MISSION_MODES)
     parser.add_argument("--rovers", type=int, default=3)

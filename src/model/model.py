@@ -57,6 +57,9 @@ class MarsSimulation(mesa.Model):
         )
         self.reset_randomizer(self.seed)
         self.rng = np.random.default_rng(self.seed)
+        # Camera noise has its own stream, so the noise level does not shift
+        # the random outcomes of the terrain.
+        self.sensor_rng = np.random.default_rng([self.seed, 1])
         self.num_rovers = int(self.config.num_rovers)
 
         # HexMultiGrid, not HexGrid: terrain patch and rover share a cell.
@@ -379,10 +382,9 @@ class MarsSimulation(mesa.Model):
                 rover.mission_status = "active"
                 rover.status_reason = "next waypoint"
                 rover._goal_event_sent = False
-                if rover.strategy is not None and hasattr(rover.strategy, "h_cost"):
-                    rover.strategy.h_cost.clear()
-                    if hasattr(rover.strategy, "_crossing"):
-                        rover.strategy._crossing = False
+                reset = getattr(rover.strategy, "reset_for_new_goal", None)
+                if reset is not None:
+                    reset()
                 continue
             if (
                 rover.mission_status == "no_path"
