@@ -165,9 +165,7 @@ p-values are paired and Holm-corrected. Full tables and figures:
 |---|---|---|---|
 | Plain ×1 | 10.0% | 39.5% | 75.0% |
 | Anxiety ×1 | **97.0%** | 59.9% | 82.0% |
-| Fuzzy rules ×1 | **100.0%** | 60.9% | 83.0% |
-| Plain ×3 | 25.0% | 67.7% | 72.0% |
-| Anxiety ×3 (no radio) | 95.3% | **78.0%** | 79.7% |
+| Fuzzy rules ×1 | **100.0%** | 60.9% | 83.0% |W
 | Swarm: shared map only | 97.0% | 71.6% | 85.3% |
 | Swarm: map + fear | 96.3% | 73.4% | **86.7%** |
 
