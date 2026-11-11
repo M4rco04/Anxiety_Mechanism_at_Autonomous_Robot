@@ -42,9 +42,6 @@ class TerrainPatch(mesa.Agent):
     terrain_type: TerrainType = TerrainType.SAFE_REGOLITH
     color: str = "#808080"
     traversable: bool = True
-    friction: float = 0.85
-    roughness: float = 0.1
-    damage_probability: float = 0.0
 
     def __init__(
         self,
@@ -90,22 +87,6 @@ class TerrainPatch(mesa.Agent):
     def apply_effect(self, rover: Pioneer3DXAgent) -> None:
         """Apply the terrain effect.  Overridden by concrete classes."""
 
-    def get_surface_properties(self) -> dict[str, Any]:
-        return {
-            "terrain_type": self.terrain_type.value,
-            "traversable": self.traversable,
-            "movement_cost": self.movement_cost,
-            "damage_risk": self.damage_risk,
-            "slope_risk": self.slope_risk,
-            "friction": self.friction,
-            "roughness": self.roughness,
-            "damage_probability": self.damage_probability,
-            "color": self.color,
-            "optical_signature": self.optical_signature,
-            "elevation": self.elevation,
-            "slope": self.slope,
-        }
-
     def _rng(self, rover: Pioneer3DXAgent) -> np.random.Generator:
         return rover.model.rng
 
@@ -123,9 +104,6 @@ class SafeRegolith(TerrainPatch):
 
     terrain_type = TerrainType.SAFE_REGOLITH
     color = "#d2b48c"
-    friction = 0.92
-    roughness = 0.08
-    damage_probability = 0.0
 
     def apply_effect(self, rover: Pioneer3DXAgent) -> None:
         mean_drain = 0.1 + (0.2 * rover.current_speed)
@@ -140,9 +118,6 @@ class Boulders(TerrainPatch):
     terrain_type = TerrainType.BOULDERS
     color = "#4d4d4d"
     traversable = False
-    friction = 0.0
-    roughness = 1.0
-    damage_probability = 1.0
 
     def apply_effect(self, rover: Pioneer3DXAgent) -> None:
         # Defensive fallback: a correct navigation strategy never enters here.
@@ -162,9 +137,6 @@ class LooseSand(TerrainPatch):
 
     terrain_type = TerrainType.LOOSE_SAND
     color = "#e6cc80"
-    friction = 0.38
-    roughness = 0.35
-    damage_probability = 0.02
 
     def apply_effect(self, rover: Pioneer3DXAgent) -> None:
         rng = self._rng(rover)
@@ -177,6 +149,16 @@ class LooseSand(TerrainPatch):
             rng.lognormal(mean=0.5 + rover.current_speed, sigma=0.3)
         )
         rover.battery -= max(0.0, drain)
+        # Grinding sand wears the wheels.
+        rover.wheel_condition -= max(0.0, float(rng.normal(loc=0.5, scale=0.2)))
+
+        # The rover can dig itself in (the Spirit scenario). It always gets
+        # out again; how long it takes depends on its wheels.
+        config = rover.model.config
+        if rng.random() < float(config.sand_stuck_probability):
+            rover.current_speed = 0.0
+            rover.is_digging = True
+            rover.dig_steps = 0
         self._clamp_rover(rover)
 
 
@@ -185,15 +167,14 @@ class Ventifacts(TerrainPatch):
 
     terrain_type = TerrainType.VENTIFACTS
     color = "#8b4513"
-    friction = 0.78
-    roughness = 0.45
-    damage_probability = 0.6
 
     def apply_effect(self, rover: Pioneer3DXAgent) -> None:
         rng = self._rng(rover)
-        scale_damage = 3.0 * rover.current_speed
-        damage = float(rng.exponential(scale=max(0.5, scale_damage)))
+        scale_damage = 6.0 * rover.current_speed
+        damage = float(rng.exponential(scale=max(1.0, scale_damage)))
         rover.wheel_condition -= max(0.0, damage)
+        # Sharp rocks also hit the chassis.
+        rover.hull_condition -= max(0.0, float(rng.exponential(scale=1.0)))
         rover.current_speed *= max(0.0, float(rng.normal(loc=0.85, scale=0.05)))
         rover.battery -= max(0.0, float(rng.normal(loc=0.8, scale=0.1)))
         self._clamp_rover(rover)
@@ -204,9 +185,6 @@ class SteepSlope(TerrainPatch):
 
     terrain_type = TerrainType.STEEP_SLOPE
     color = "#ff6666"
-    friction = 0.7
-    roughness = 0.7
-    damage_probability = 0.35
 
     def apply_effect(self, rover: Pioneer3DXAgent) -> None:
         rng = self._rng(rover)
@@ -219,13 +197,14 @@ class SteepSlope(TerrainPatch):
         fall_prob = 1.0 / (1.0 + math.exp(-0.25 * steepness_factor))
         if rng.random() < fall_prob:
             rover.is_overturned = True
-            hull_damage = float(rng.normal(loc=35.0, scale=10.0))
-            wheel_damage = float(rng.normal(loc=20.0, scale=8.0))
+            hull_damage = float(rng.normal(loc=40.0, scale=10.0))
+            wheel_damage = float(rng.normal(loc=25.0, scale=8.0))
             rover.hull_condition -= max(0.0, hull_damage)
             rover.wheel_condition -= max(0.0, wheel_damage)
             rover.current_speed = 0.0
         else:
-            rover.gyro_alarm = self.slope > 20.0
+            # Climbing a crater wall strains the wheels even without a fall.
+            rover.wheel_condition -= max(0.0, float(rng.normal(loc=2.0, scale=1.0)))
         self._clamp_rover(rover)
 
 
@@ -234,14 +213,15 @@ class DeepShadow(TerrainPatch):
 
     terrain_type = TerrainType.DEEP_SHADOW
     color = "#1a1a1a"
-    friction = 0.85
-    roughness = 0.12
-    damage_probability = 0.0
 
     def apply_effect(self, rover: Pioneer3DXAgent) -> None:
-        base_drain = 3.5 + (0.5 * rover.shadow_exposure_time)
-        drain = float(self._rng(rover).normal(loc=base_drain, scale=0.4))
+        rng = self._rng(rover)
+        base_drain = 4.0 + (0.75 * rover.shadow_exposure_time)
+        drain = float(rng.normal(loc=base_drain, scale=0.4))
         rover.battery -= max(0.0, drain)
+        # Long exposure to the cold damages the electronics in the hull.
+        if rover.shadow_exposure_time >= 3:
+            rover.hull_condition -= max(0.0, float(rng.normal(loc=1.5, scale=0.5)))
         self._clamp_rover(rover)
 
 
@@ -250,16 +230,17 @@ class DustStorm(TerrainPatch):
 
     terrain_type = TerrainType.DUST_STORM
     color = "#b38b6d"
-    friction = 0.8
-    roughness = 0.2
-    damage_probability = 0.0
 
     def apply_effect(self, rover: Pioneer3DXAgent) -> None:
         current_lambda = max(0.1, 2.5 - (0.4 * rover.dust_exposure_time))
         rover.vision_range = int(
             max(0, self._rng(rover).poisson(lam=current_lambda))
         )
-        rover.battery -= max(0.0, float(self._rng(rover).normal(loc=1.2, scale=0.3)))
+        rng = self._rng(rover)
+        rover.battery -= max(0.0, float(rng.normal(loc=1.2, scale=0.3)))
+        # Abrasive dust wears wheels and hull.
+        rover.wheel_condition -= max(0.0, float(rng.normal(loc=0.8, scale=0.3)))
+        rover.hull_condition -= max(0.0, float(rng.normal(loc=0.6, scale=0.3)))
         self._clamp_rover(rover)
 
 

@@ -52,6 +52,8 @@ class Observation:
     allow_forced_fear_visit: bool
     retreat_required: bool
     current_terrain: TerrainObservation | None
+    # Positions of other swarm rovers heard over the radio (id -> position).
+    swarm_peers: Mapping[int, Position] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -65,6 +67,7 @@ class NavigationDecision:
         "no_path",
         "blocked",
         "forced_fear_visit",
+        "waiting",
     ] = "moving"
     metadata: Mapping[str, float] = field(default_factory=dict)
 

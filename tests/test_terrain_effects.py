@@ -83,4 +83,3 @@ def test_steep_slope_can_be_deterministic_with_seed():
     rover.current_speed = 1.0
     SteepSlope(1, model, elevation=1.0, slope=80.0).apply_effect(rover)
     assert rover.is_overturned in {True, False}
-    assert rover.gyro_alarm in {True, False}

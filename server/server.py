@@ -160,6 +160,7 @@ class WebServer:
         navigation_mode: str = "scaffold",
         mission_mode: str = "exploration",
         max_steps: int = 500,
+        solar_charging: bool = True,
     ) -> None:
         if width <= 0 or height <= 0:
             raise ValueError("Terrain dimensions must be positive")
@@ -175,6 +176,7 @@ class WebServer:
             navigation_mode=navigation_mode,
             mission_mode=mission_mode,
             max_steps=max_steps,
+            solar_charging=solar_charging,
         )
         config.validate()
         self.config = config
@@ -193,8 +195,47 @@ class WebServer:
         self._http_server.server_close()
 
 
-def main(host: str = "127.0.0.1", port: int = 8000) -> None:
-    WebServer(host=host, port=port).serve_forever()
+def main(argv: list[str] | None = None) -> None:
+    import argparse
+
+    from config.config import MISSION_MODES, NAVIGATION_MODES
+
+    parser = argparse.ArgumentParser(description="Live 3D Mars rover viewer.")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument(
+        "--navigation-mode",
+        default="scaffold",
+        choices=NAVIGATION_MODES,
+        help="Rover algorithm: scaffold (non-scientific walker), online, "
+        "emotional (stress/fear) or swarm_emotional (fear shared by radio).",
+    )
+    parser.add_argument("--mission-mode", default="exploration", choices=MISSION_MODES)
+    parser.add_argument("--rovers", type=int, default=3)
+    parser.add_argument("--seed", type=int, default=2025)
+    parser.add_argument("--max-steps", type=int, default=500)
+    parser.add_argument(
+        "--charging",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Solar charging on SafeRegolith (--no-charging disables it).",
+    )
+    args = parser.parse_args(argv)
+
+    print(
+        f"Navigation: {args.navigation_mode} | mission: {args.mission_mode} | "
+        f"rovers: {args.rovers} | seed: {args.seed}"
+    )
+    WebServer(
+        host=args.host,
+        port=args.port,
+        num_rovers=args.rovers,
+        seed=args.seed,
+        navigation_mode=args.navigation_mode,
+        mission_mode=args.mission_mode,
+        max_steps=args.max_steps,
+        solar_charging=args.charging,
+    ).serve_forever()
 
 
 if __name__ == "__main__":

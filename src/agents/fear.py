@@ -8,7 +8,7 @@ from typing import Literal
 
 from src.model.types import RGB, Position, clamp, rgb_distance
 
-FearSource = Literal["self", "radio", "mixed"]
+FearSource = Literal["self", "radio", "context", "mixed"]
 
 
 @dataclass

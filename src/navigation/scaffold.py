@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from config.config import SimulationConfig
 from src.model.types import Position
 from src.navigation.board import HexGridBoard
+from src.navigation.energy import seek_charging_spot
 from src.navigation.types import NavigationDecision, Observation
 
 
@@ -48,6 +49,11 @@ class ScaffoldStrategy:
         actions = board.actions(observation.position, observation)
         if not actions:
             return NavigationDecision(None, "no safe neighbour", "no_path")
+
+        charge = seek_charging_spot(rover, observation, board)
+        if charge is not None:
+            self._moves += 1
+            return charge
 
         previous: Position | None = None
         if len(rover.path) >= 2:

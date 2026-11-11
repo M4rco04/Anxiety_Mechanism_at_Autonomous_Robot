@@ -27,6 +27,10 @@ server = "server.server:main"
 simulate = "root.run:main"
 # `uv run batch-run` -> many paired episodes and a statistical report
 batch-run = "root.batch_run:main"
+# `uv run analyze` -> online vs stress vs swarm: exploration and goal tests
+analyze = "root.analyze:main"
+# `uv run study` -> controls, ablations, sensitivity and noise on held-out maps
+study = "root.study:main"
 # `uv run show_map` -> terrain-only Matplotlib preview
 show_map = "show_map:visualize_map"
 

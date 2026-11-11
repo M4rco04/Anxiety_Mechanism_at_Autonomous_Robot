@@ -1,263 +1,125 @@
 ﻿# Anxiety Mechanism at Autonomous Robot
 
+A hex-grid Mars rover simulation of the **conditioned-anxiety** control
+mechanism described by Bielecki et al. (ICAISC 2017) and Bielecki & Bielecki
+(2025). A rover that experiences a dangerous event learns in a single act to
+avoid the circumstances of that event. The project compares this rover with a
+rover without anxiety and with a swarm that shares learned dangers by radio.
+
 ## At a glance
 
-| Command | What it gives you |
-|---|---|
-| `uv run show_map` | A terrain-only preview: the procedural Mars map in Matplotlib, without rovers or simulation. |
-| `uv run simulate` | One complete simulation episode — a single mission from spawn to termination, with one seed and one outcome. |
-| `uv run batch-run` | A Monte Carlo experiment: many episodes across variants, mission modes and paired seeds, finished with statistics, plots and a Markdown report. Use `--smoke` until Karol's scientific navigation modes are registered. |
-| `uv run server` | The interactive live 3D demo at `http://127.0.0.1:8000`: terrain, animated rovers, instruments, telemetry and playback controls. |
+The project uses [uv](https://docs.astral.sh/uv/); dependencies install on the
+first run. Every command accepts `--help`.
 
-A grid-based Mars rover simulation that implements the **conditioned-anxiety**
-control mechanism from the project papers and the internal
-`src/agents/instruction.md` / `src/agents/rover_moving_instruction.md`
-specifications.
+### `uv run analyze` — main experiment
 
-The project contains:
+Runs the plain algorithm (1 rover), the anxiety mechanism (1 rover) and the
+rover swarm (3 rovers) on the same maps in two tests (terrain exploration and
+goal navigation), then writes tables, significance tests and figures to
+`results/analysis/`.
 
-- a deterministic hex-grid Mars terrain generated with Perlin noise,
-- a Pioneer 3-DX rover with physical state, LIDAR/RGB sensors, homeostat,
-  one-act fear imprinting and radio communication,
-- an animated 3D rover viewer built on top of the existing Three.js terrain
-  scene,
-- ready interfaces for Karol's navigation algorithms,
-- a reproducible Monte Carlo experiment and reporting pipeline.
-
-## Quick start
-
-The project uses [uv](https://docs.astral.sh/uv/). Dependencies are installed
-automatically on the first run.
+| Parameter | Default | Meaning |
+|---|---|---|
+| `-n`, `--runs` | `30` | Simulations per variant and test. |
+| `--workers` | `1` | Parallel processes. |
+| `--tests` | both | `exploration` and/or `goal_navigation`. |
+| `--base-seed` | `0` | First seed; seeds `base … base+n−1` define the maps. |
+| `--width`, `--height` | `50`, `50` | Map size in hex cells. |
+| `--max-steps` | `500` | Step limit per simulation. |
+| `--waypoints` | `3` | Route points in the goal test. |
+| `--s-crit` | `40` | Stress threshold that triggers a fear imprint. |
+| `--charging` / `--no-charging` | on | Solar charging on safe ground. |
+| `--rgb-noise` | `5` | Camera noise (std per RGB channel); `0` = perfect recognition. |
+| `--map-seed` | base seed | Seed of the simulation drawn on the swarm stress map. |
+| `--no-plots` | off | Skip the figures. |
+| `--output` | `results/analysis` | Output directory. |
 
 ```bash
-# Terrain-only Matplotlib preview
-uv run show_map
-
-# Interactive live 3D terrain + rover mission at http://127.0.0.1:8000
-uv run server
-
-# One complete headless simulation episode
-uv run simulate --seed 42 --navigation-mode scaffold --max-steps 100
-
-# Non-scientific pipeline smoke test with many scaffold episodes
-uv run batch-run --smoke --seed-count 2
-
-# Test suite
-uv sync --extra dev
-uv run pytest -q
+uv run analyze -n 1000 --workers 14   # 6,000 simulations, ~15 min (README results)
 ```
 
-The default server uses a 50 × 50 hex map and three rovers. The live viewer
-starts in a smooth follow close-up on the first rover; use **View** in the
-telemetry panel to return to the whole-terrain overview and click any rover
-row to follow that rover again.
+### `uv run study` — publication study
 
-## Project structure
+Runs on **held-out maps** (seeds from 1000; the parameters were calibrated on
+seeds 0–39) with the frozen default parameters, and writes
+`results/study/report.md`, CSV tables and figures. Four parts:
 
-### Configuration (`config/`)
+- `swarm` – controls that separate the effect of more rovers, a shared map and shared fear,
+- `ablation` – the full anxiety model vs. versions without each element,
+- `sensitivity` – `S_crit`, fear weight and fear decay, one at a time,
+- `noise` – survival as a function of camera noise.
 
-| File | Contents | Description |
+| Parameter | Default | Meaning |
 |---|---|---|
-| `config/config.py` | `SimulationConfig`, `HomeostatConfig`, `DEFAULT_CONFIG` | Single source of truth for grid size, seeds, mission modes, homeostat weights, fear parameters, radio range, sensor ranges, terrain costs/risk and display timing. Includes validation, JSON round-trip and a configuration hash. |
-
-### Environment (`src/environment/`)
-
-| File | Main classes / functions | Description |
-|---|---|---|
-| `terrain.py` | `TerrainPatch`, `TerrainType`, `SafeRegolith`, `Boulders`, `LooseSand`, `Ventifacts`, `SteepSlope`, `DeepShadow`, `DustStorm`, `terrain_at` | Passive hex-cell agents with the original colors plus optical signatures, traversal/cost/risk metadata and seeded physical effects. |
-| `generator.py` | `MarsMapGenerator.generate_topography`, `assign_terrain_classes` | Perlin-based terrain zones. The original layout logic and thresholds are preserved; randomness is seeded for reproducible experiments. |
-
-### Robot and communication (`src/agents/`, `src/communication/`)
-
-| File | Main classes / functions | Description |
-|---|---|---|
-| `agents/homeostat.py` | `Homeostat`, `HomeostatReading` | Implements the stress equation from `instruction.md` §6 with clamping, diagnostics and safe handling of `V_target = 0`. |
-| `agents/fear.py` | `FearRecord`, `FearView`, `find_matching_record`, `effective_intensity` | RGB-keyed anxiety memory with tolerance matching, source tracking and exponential decay. |
-| `agents/rover.py` | `Pioneer3DXAgent` | Rover state, LIDAR/RGB perception, exposure counters, one-shot imprinting, radio receive/broadcast, step loop and mission status. It delegates route selection to a navigation strategy. |
-| `communication/radio.py` | `RadioPacket`, `RadioModule` | Typed radio packets and hex-range helpers. |
-| `communication/swarm.py` | `SwarmBroadcaster` | End-of-step queue/delivery, deduplication and range filtering. Packets never cause physical damage. |
-
-### Model and simulation (`src/model/`, `src/simulation/`)
-
-| File | Main classes / functions | Description |
-|---|---|---|
-| `model/types.py` | `Position`, `RGB`, `hex_distance`, `rgb_distance`, `clamp` | Shared value types and Mesa-compatible odd-q hex geometry. |
-| `model/model.py` | `MarsSimulation` | Mesa model using `HexMultiGrid`, seeded RNG, safe spawning, target assignment, scheduler, radio processing, DataCollector and termination logic. |
-| `simulation/session.py` | `SimulationSession`, `SimulationSnapshot`, `RoverSnapshot` | JSON-serializable single-episode service used by the headless runner and the live web API. |
-
-### Navigation (`src/navigation/`) — Karol's handoff
-
-| File | Contents | Description |
-|---|---|---|
-| `types.py` | `Observation`, `TerrainObservation`, `NavigationDecision`, `NavigationStrategy` | Immutable navigation contract. The strategy receives sensors, visited cells, fear memory and mission state. |
-| `board.py` | `HexGridBoard` | Mesa hex adapter: bounds, neighbours, known obstacles, rover occupancy and movement costs. |
-| `observation.py` | `build_observation` | Builds the sensor/navigation observation from the rover. |
-| `scaffold.py` | `ScaffoldStrategy` | Deterministic smoke-only walker. It is **not scientific**. |
-| `strategies.py` | strategy skeletons | The scientific algorithms are intentionally left for Karol. They raise `NotImplementedError` until `IMPLEMENTED = True`. |
-| `registry.py` | `create_strategy`, `available_strategies` | Scientific-mode gating. Scaffold is always available; unfinished modes fail loudly. |
-
-The scientific variants are:
-
-- `online` — no fear memory,
-- `emotional` — own imprinted fear memory,
-- `swarm_emotional` — own and radio-received fear.
-
-Mission modes are `exploration` and `goal_navigation`; mode switching is
-controlled by the model, not by the strategy.
-
-### Analytics (`src/analytics/`) — Wiktor's pipeline
-
-| File | Main functions | Description |
-|---|---|---|
-| `metrics.py` | `setup_datacollector`, `collect_rover_metrics`, `collect_episode_metrics` | Mesa DataCollector plus episode/rover metric definitions. |
-| `results.py` | `EpisodeResult` | Serializable experiment result. |
-| `benchmark.py` | `BenchmarkManager`, `run_episode`, `summarize_episodes`, `paired_comparisons` | Paired-seed Monte Carlo runner, summary statistics, Wilson intervals, Wilcoxon tests and Holm correction. |
-| `plots.py` | `plot_all`, `plot_success_rate`, `plot_time_series`, `plot_sample_trajectories`, `plot_fear_activity` | Dark-theme PNG figures matching the Mars viewer. |
-| `reporting.py` | `write_report`, `write_single_episode_report`, `print_summary` | Markdown report and console summary. |
-
-### Web server and visualization (`server/`)
-
-| File | Contents | Description |
-|---|---|---|
-| `server.py` | `WebServer`, HTTP handler | Serves the existing terrain JSON and the live simulation API. `/api/terrain` keeps its original schema. |
-| `terrain_data.py` | `terrain_payload_from_model` | Serializes the same terrain used by the simulation. |
-| `simulation_runtime.py` | `SimulationRuntime` | Owns one session, serializes concurrent requests and caches terrain. |
-| `js/scene/TerrainScene.js` | `TerrainScene` | Robert's scene, extended with rover layer, rover tooltip, camera focus and per-frame rover updates. |
-| `js/terrain/*` | terrain renderer/material/effects | Existing terrain visualization; the only additive change is a height lookup for rovers. |
-| `js/rover/RoverModel.js` | `RoverModel` | Procedural rover with chassis, six wheels, suspension, solar panel, camera mast, stereo RGB cameras, LIDAR, antenna, battery strip, status ring and shadow. |
-| `js/rover/RoverLayer.js` | `RoverLayer` | Smooth movement/turning, wheel rotation, trails, fear markers, radio pulses, dust and selection scan ring. |
-| `js/simulation/SimulationClient.js` | `SimulationClient` | Fetches snapshots, drives playback, handles pause/step/reset/speed and visibility changes. |
-| `js/simulation/SimulationPanel.js` | `SimulationPanel` | Telemetry, mission step, rover selection, playback and overview controls. |
-| `js/ui/RoverTooltip.js` | `RoverTooltip` | Rover devices, battery, stress, damage and fear tooltip. |
-
-### Entry points (`root/`)
-
-| File | Description |
-|---|---|
-| `root/run.py` | Single-episode headless runner using `SimulationSession`. This is also Marek's final presentation extension point. |
-| `root/batch_run.py` | Comparative experiment CLI: variants, mission modes, paired seeds, workers, output directory and Markdown report. |
-
-## Scientific model
-
-### Homeostat
-
-For battery drop `ΔB`, target/current speed `V_zad`/`V_akt`, hull/wheel
-condition `C_kadlub`/`C_kolo` and slope `α`:
-
-```text
-S_chwilowy =
-    w1 * ΔB
-  + w2 * max(0, 1 - V_akt / V_zad)
-  + w3 * (exp(k * (100 - C_kadlub)) - 1)
-  + w4 * (exp(k * (100 - C_kolo)) - 1)
-  + w5 * max(0, α - α_bezp)
-
-S_calkowity = β * S_poprzedni + (1 - β) * S_chwilowy
-```
-
-Default constants: `w1=5`, `w2=15`, `w3=3`, `w4=2.5`, `w5=2`,
-`k=0.05`, `α_bezp=15°`, `β=0.7`, `S_crit=75`. Stress is clamped to
-`[0, 100]`; `V_zad <= 0` produces no slip term.
-
-### Conditioned anxiety
-
-When smoothed stress crosses `S_crit`, the rover imprints the current stable
-RGB terrain signature in one act. The memory record stores intensity, number of
-reinforcements, step, source and source position. Matching uses Euclidean RGB
-distance with a configurable tolerance. Effective fear decays exponentially:
-
-```text
-intensity_effective = intensity * exp(-fear_decay * age)
-fear_cost = fear_weight * intensity_effective
-```
-
-The emotional navigation variants are expected to add this cost to movement
-evaluation and to retreat when `Observation.retreat_required` is true.
-Radio-received signatures enter the same memory with `source="radio"` and never
-change battery, hull, wheels or stress directly.
-
-### Hex geometry
-
-Mesa 2.4's `HexGrid` is a `SingleGrid`, so the model uses:
-
-```python
-mesa.space.HexMultiGrid(width, height, torus=False)
-```
-
-The verified odd-q distance formula is implemented in `src/model/types.py`.
-Neighbour queries use the Mesa radius API and never use `moore=True`.
-
-## Live visualization
-
-The viewer shows the real simulation, not a canned animation:
-
-- six wheels with suspension and distance-based wheel rotation,
-- solar panel and battery strip,
-- camera mast with two RGB lenses,
-- spinning LIDAR with optional scan ring,
-- radio antenna with send/receive pulses,
-- status ring driven by stress, battery strip driven by charge,
-- smooth turn-then-drive interpolation and slope pitch/roll,
-- path trail, fear markers, radio rings and dust on loose sand/dust storms,
-- hover tooltip with device/telemetry state.
-
-The server exposes:
-
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/api/terrain` | Existing terrain payload (unchanged schema). |
-| GET | `/api/simulation/state` | Current JSON snapshot. |
-| POST | `/api/simulation/step` | Advance one deterministic model step. |
-| POST | `/api/simulation/reset` | Reset the session (same seed by default). |
-| GET | `/api/simulation/config` | Display/experiment metadata. |
-
-The front end is client-driven: `SimulationClient` requests steps at the
-configured display interval and `RoverLayer` interpolates at 60 fps. This keeps
-the simulation deterministic and avoids server-side timing races.
-
-## Experiments
+| `-n`, `--runs` | `100` | Simulations per condition and test. |
+| `--sens-runs` | `50` | Simulations per sensitivity point. |
+| `--parts` | all four | Subset of `swarm ablation sensitivity noise`. |
+| `--base-seed` | `1000` | First held-out seed. |
+| `--workers` | `4` | Parallel processes. |
+| `--max-steps` | `500` | Step limit per simulation. |
+| `--output` | `results/study` | Output directory. |
 
 ```bash
-# Scientific comparison after Karol registers the strategies
-uv run python root/batch_run.py \
-  --variants online emotional swarm_emotional \
-  --mission-modes exploration goal_navigation \
-  --seed-count 30 \
-  --workers 4 \
-  --output results/main
+uv run study --workers 10       # 6,600 simulations, ~35 min
 ```
 
-Results are written to `results/<run>/`:
+### `uv run server` — live 3D viewer
 
-```text
-config.json
-environment.json
-episodes.csv
-steps.csv
-agent_steps.csv
-summary.csv
-summary.json
-paired_tests.csv
-report.md
-plots/
-```
+Serves the terrain, animated rovers, telemetry and playback controls at
+`http://127.0.0.1:8000`.
 
-The design is paired by seed: every variant and mission mode sees the same
-terrain and spawn positions. The report includes confidence intervals, paired
-Wilcoxon tests, effect sizes and a clear scientific/smoke-test disclaimer.
-
-## Team handoff
-
-| Owner | Status | Files |
+| Parameter | Default | Meaning |
 |---|---|---|
-| **Antoni** | **Completed — frozen** | Board generator and terrain classes/colors. No handoff tasks remain. |
-| **Robert** | **Completed — frozen** | Terrain 3D scene, textures, materials and tooltips. The rover layer is an additive integration; existing terrain behavior is preserved. |
-| **Bartosz** | Implemented | Robot state, sensors, homeostat, fear, radio, model integration and live rover visualization. |
-| **Karol** | Pending | `src/navigation/strategies.py`. The interfaces, board adapter, observation, registry and acceptance tests are ready. |
-| **Marek** | Extension point | `root/run.py` and final presentation orchestration. `SimulationSession`, the live API and viewer are functional. |
-| **Wiktor** | Implemented | Metrics, batch experiments, statistics, plots and report. |
+| `--navigation-mode` | `scaffold` | `scaffold` (non-scientific walker), `online` (plain), `emotional` (anxiety), `swarm_emotional` (anxiety shared by radio). |
+| `--mission-mode` | `exploration` | `exploration` or `goal_navigation`. |
+| `--rovers` | `3` | Number of rovers. |
+| `--seed` | `2025` | Map seed. |
+| `--max-steps` | `500` | Step limit. |
+| `--charging` / `--no-charging` | on | Solar charging. |
+| `--host`, `--port` | `127.0.0.1`, `8000` | Server address. |
 
-## Testing
+```bash
+uv run server --navigation-mode emotional --rovers 1
+```
+
+### `uv run simulate` — one headless episode
+
+Prints the end state of every rover and writes `episode.json`.
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `--navigation-mode` | `scaffold` | As for the server. |
+| `--mission-mode` | `exploration` | `exploration` or `goal_navigation`. |
+| `--seed` | `42` | Map seed. |
+| `--rovers` | `3` | Number of rovers. |
+| `--width`, `--height` | `50`, `50` | Map size. |
+| `--max-steps` | from config (`500`) | Step limit. |
+| `--config` | – | JSON file with a saved `SimulationConfig`. |
+| `--output` | `results/single_seed_<seed>` | Output directory. |
+
+### `uv run batch-run` — general Monte Carlo pipeline
+
+Paired-seed experiments over any variants and mission modes (all with the
+same number of rovers), with plots and a Markdown report in `results/main/`.
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `--variants` | `online emotional swarm_emotional` | Navigation modes to compare. |
+| `--mission-modes` | both | `exploration` and/or `goal_navigation`. |
+| `--seed-count` | `30` | Seeds (maps) per variant. |
+| `--base-seed` | `0` | First seed. |
+| `--rovers` | `3` | Rovers in every variant. |
+| `--workers` | `1` | Parallel processes. |
+| `--width`, `--height`, `--max-steps` | `50`, `50`, `500` | Map and step limit. |
+| `--config` | – | JSON file with a saved `SimulationConfig`. |
+| `--smoke` | off | Quick pipeline check with the non-scientific walker. |
+| `--output` | `results/main` | Output directory. |
+
+### `uv run show_map` — terrain preview
+
+Shows the generated map in Matplotlib (no parameters).
+
+### Tests
 
 ```bash
 uv sync --extra dev
@@ -265,39 +127,263 @@ uv run pytest -q
 uv run ruff check src config server root tests
 ```
 
-The suite covers hex geometry, homeostat, terrain effects, one-shot fear
-imprinting, RGB tolerance/decay, radio range and deduplication, rover step
-ordering, board filtering, seed reproducibility, analytics artifacts and the
-HTTP API. Karol-dependent navigation tests are marked `xfail` with an explicit
-expected-failure reason.
+## Relation to the papers
+
+| Paper | In this project |
+|---|---|
+| Inner detectors track the robot's state; an alarming reading triggers learning. | Homeostat (`src/agents/homeostat.py`) with two alarms: instantaneous stress `>= S_crit`, or wheel slip (speed drop despite constant drive) for 2 steps in a row. |
+| One-act learning: a single dangerous experience is enough. | One alarm imprints the terrain with full intensity 1.0. |
+| Short-term memory of the last seconds; the whole content is stored as one danger pattern; "avoiding circumstances that preceded the dangerous event is even more efficient". | Short-term memory of the last 5 steps. The current terrain is imprinted with 1.0 and the preceding terrain (context) with up to 0.5, weakened for familiar terrain (latent inhibition), so the rover does not start fearing everything. |
+| Similarity = Euclidean distance between RGB readings with a threshold (2025). | `fear_rgb_tolerance = 24`; camera readings are noisy (σ = 5 per channel), so recognition is not perfect. |
+| If the circumstances are similar → stop and reverse until they no longer are; then go around (2025). | Retreat to a less feared neighbour, then fear is a cost in route planning (detour). If no detour exists, the rover crosses on purpose. |
+| Small obstacles detectable only by a dedicated sensor damage the robot; a damaged robot continues (2017). | Ventifacts are invisible to LIDAR and damage wheels; overturned rovers get back on their wheels and continue. |
+| Spirit stuck in sand; slippery pits trap the robot with probability 1/3 (2025). | Loose sand bogs the rover down (12% per entry). It always digs out: after 3 steps each step succeeds with 35% × wheel condition, at the latest after 12 steps. Digging drains the battery, wears the wheels and raises stress, so the rover survives to learn the fear of sand. |
+| The mission leads across two sand pits (2025). | Goal test: 3 legs, each route crosses hazardous terrain; fear memory is kept between legs. |
+| "Panic attack": after many dangers the robot fears almost everything (2025). | Measured: fears per rover and rovers that fear plain safe regolith. |
+| Simple vs. emotional robot, 11–30 missions each. | Paired seeds (the same maps for every variant), Wilson CIs, McNemar and Wilcoxon tests. |
+
+**Extensions not in the papers:** the swarm with radio sharing of fears,
+exponential decay of fear, the homeostat stress formula, solar charging,
+A* route planning.
+
+## Results
+
+### Held-out study (`uv run study`, seeds 1000–1099, n = 100)
+
+Parameters were calibrated on seeds 0–39 and frozen; these maps were never
+used for tuning. Survival and route completion are per rover; p-values are
+paired and Holm-corrected. Full tables and figures: `results/study/report.md`.
+
+| Condition | Exploration: survival | Exploration: terrain discovered | Goal: route completed |
+|---|---|---|---|
+| Plain ×1 | 9.0% | 19.7% | 76.0% |
+| Anxiety ×1 | **78.0%** | 32.8% | 78.0% |
+| Plain ×3 | 7.7% | 35.6% | 70.0% |
+| Anxiety ×3 (no radio) | **73.0%** | 50.3% | 78.0% |
+| Swarm: shared map only | 69.7% | 55.7% | 78.0% |
+| Swarm: map + fear | **84.3%** | **60.0%** | 81.0% |
+
+What holds and what does not:
+
+- **The anxiety mechanism works in exploration.** Survival rises from 9% to
+  78% (single rover) and from 8% to 73% (three rovers), p < 0.001 after
+  correction; discovered terrain also rises (+13 and +15 points, significant).
+- **No significant effect in the goal test** with 100 maps (+2 points for
+  one rover, +8 points for three rovers, p = 0.05 after correction; with
+  1,000 maps the single-rover gain of +5 points is significant, see the main
+  experiment below): the plain rover
+  already plans cost-aware A* routes around expensive terrain, every leg must
+  cross a hazard anyway, and a rover learns only after its first accident.
+- **Swarm:** sharing the map of visited cells increases discovered terrain
+  (+5.4 points) but not survival. **Sharing fear by radio raises survival**
+  (+0.44 survivors per run, 70% → 84% per rover) and discovered terrain
+  (+4.3 points), both p < 0.001 after correction. In the goal test no swarm
+  element has a significant effect.
+- **Ablations:** the key element is the damage-based homeostat. With the
+  specification homeostat survival drops to 7% (as without anxiety) and 23 of
+  100 rovers end up fearing safe regolith ("panic"). Imprinting on the
+  smoothed instead of the instantaneous stress costs 27 points (p < 0.001).
+  The slip alarm helps a little (−7 points without it, not significant).
+  Context imprinting and fear decay have no measurable effect.
+- **Sensitivity:** a lower `S_crit` is better (25 → 74% survival, 75 → 52%);
+  the default 40 is not the optimum, so the result is not a product of
+  tuning. Fear weight hardly matters (64–74% over 5–100). Fear decay above
+  0.005/step makes the rover forget too fast (0.05 → 20%).
+- **Camera noise:** a single anxious rover is stable up to σ = 5, drops to
+  43% at σ = 15 and to 25% at σ = 30 (still above the plain rover's 9%):
+  noise breaks *recognition*, not *learning*. The swarm stays at 83–86% at
+  every noise level.
+
+### Main experiment (`uv run analyze -n 1000`, seeds 0–999)
+
+6,000 simulations (1,000 maps × 3 variants × 2 tests, about 15 min with
+`--workers 14`). The seeds include the calibration maps 0–39 and the
+held-out maps of the study (1000+ are not used). Brackets: 95% Wilson CI;
+p-values from paired tests against the plain algorithm (the same maps).
+Full report: `results/analysis/report.md`.
+
+**Test 1: terrain exploration**
+
+| Variant | Rovers | Rover survival | Runs without losses | Terrain discovered [%] |
+|---|---:|---|---|---|
+| Plain algorithm | 1 | 3.7% [3–5] | 3.7% [3–5] | 19.8 ± 8.5 |
+| Anxiety mechanism | 1 | **71.5%** [69–74] | 71.5% [69–74] | 31.2 ± 9.7 |
+| Rover swarm | 3 | **80.2%** [79–82] | 52.7% [50–56] | **58.8** ± 8.6 |
+
+**Test 2: goal navigation** (3 route points, each leg crosses hazardous terrain)
+
+| Variant | Rovers | Route completed (per rover) | Route points reached | All rovers completed | Mean steps (completed) |
+|---|---:|---|---|---|---|
+| Plain algorithm | 1 | 68.1% [65–71] | 76.2% | 68.1% [65–71] | 155.9 |
+| Anxiety mechanism | 1 | **73.1%** [70–76] | 78.9% | 73.1% [70–76] | 187.7 |
+| Rover swarm | 3 | **76.7%** [75–78] | 82.8% | 55.3% [52–58] | 219.7 |
+
+- **Exploration:** anxiety raises survival from 3.7% to 71.5% and discovered
+  terrain from 19.8% to 31.2% (both p < 0.001). The swarm discovers three
+  times as much terrain as one plain rover.
+- **Goal navigation:** with 1,000 maps the anxiety mechanism gives a small
+  but significant gain (+5 points, p < 0.001); with 30 or 100 maps it is too
+  small to detect. The gain is small because the plain rover already plans
+  A* routes that avoid expensive terrain, each leg has to cross a hazard
+  anyway, and a rover learns only after its first accident. The anxious
+  rover pays with detours (+32 steps on average).
+- **Swarm in the goal test:** per rover the swarm does best (76.7%), but
+  "all three rovers completed" (55.3%) is lower than for one plain rover,
+  because three rovers must all succeed.
+- **Limits of one-act learning:** some rovers are lost at their very first
+  dangerous event (e.g. an overturn on a steep slope); no learning can help
+  there.
+- **Panic is rare:** 14 of 1,000 anxious rovers in exploration (24 in the
+  goal test) end up fearing safe regolith.
+
+For comparison, the papers report 42% → 73% (2017) and 33% → 77% (2025).
+
+## Scientific model
+
+### Terrain
+
+| Terrain | Effect on entry |
+|---|---|
+| Safe regolith | Small battery use. Solar charging possible. |
+| Loose sand | High battery use, slip, wheel wear 0.5; 12% chance to get stuck (see above). |
+| Ventifacts | Wheels −6 (exponential), hull −1; invisible to LIDAR. |
+| Steep slope (30–42°) | High battery use; overturn likely (hull −40, wheels −25, then 3 steps to get up); otherwise wheels −2. |
+| Deep shadow | Battery −4 growing with exposure; after 3 steps hull −1.5 per step (cold). |
+| Dust storm | Battery −1.2, wheels −0.8, hull −0.6, camera range reduced. |
+| Boulders | Not traversable (seen by LIDAR). |
+
+A rover is lost when battery, hull or wheels reach 0 (also while digging out of
+sand).
+
+### Homeostat
+
+The default (damage-based) model:
+
+```text
+S_inst  = w1·ΔB + w2·slip + w_hull·ΔC_hull + w_wheel·ΔC_wheel + w5·max(0, α − α_safe)
+S_total = β·S_prev + (1 − β)·S_inst
+
+slip = max(0, 1 − V_actual / V_target)
+```
+
+| Symbol | Meaning | Default |
+|---|---|---|
+| `ΔB` | Battery drop in this step [%] | – |
+| `slip` | Relative speed loss (actual vs. target speed) | – |
+| `ΔC_hull`, `ΔC_wheel` | Hull / wheel damage taken in this step [%] | – |
+| `α`, `α_safe` | Terrain slope and the safe slope [°] | `α_safe = 25` |
+| `w1`, `w2`, `w_hull`, `w_wheel`, `w5` | Weights | `5`, `15`, `4`, `8`, `3` |
+| `β` | Smoothing of the total stress | `0.7` |
+| `S_crit` | Alarm threshold for `S_inst` | `40` |
+
+Fear is imprinted when `S_inst >= S_crit` or the slip alarm fires
+(`slip >= 0.7` for 2 steps in a row). `S_total` is the stress shown in the
+viewer and on the swarm stress map.
+
+The original formula from the project specification is available as
+`HomeostatConfig.specification()`:
+
+```text
+S_inst = w1·ΔB + w2·slip + w3·(exp(k·(100 − C_hull)) − 1) + w4·(exp(k·(100 − C_wheel)) − 1)
+       + w5·max(0, α − α_safe)
+w1=5, w2=15, w3=3, w4=2.5, w5=2, k=0.05, α_safe=15°, β=0.7, S_crit=75 (applied to S_total)
+```
+
+It was replaced because its hull/wheel terms measure overall wear
+(`C_hull`, `C_wheel` = current condition) instead of the terrain that hurts
+now: fear was imprinted on wrong cells (also safe regolith), and the most
+damaging terrain never crossed the threshold.
+
+### Anxiety memory and behaviour
+
+```text
+I_effective = I · exp(−λ · age)              λ = fear_decay = 0.005 per step
+fear_cost   = w_fear · I_effective           w_fear = fear_weight = 30
+I_context   = 0.5 · exp(−exposures / 3)      skipped below 0.15
+```
+
+- On a cell with fear ≥ 0.5 the rover retreats to a less feared neighbour
+  (not while crossing on purpose towards a goal).
+- Exploration skips neighbours with fear ≥ 0.1 when other options exist.
+- Goal navigation replans an A* route every step over the terrain the rover
+  has seen (unknown cells cost 1); emotional variants add `fear_cost`.
+- Swarm: an imprint is broadcast within `R_radio = 20` cells; receivers store
+  it with gain 0.8 and `source="radio"`. Swarm rovers also share visited cells.
+- Swarm exploration (`swarm_split_area`): rovers report their positions by
+  radio and split the terrain: each one explores the cells that are closer to
+  it than to any peer (its own area). Targets farther than
+  `swarm_cohesion_radius = 12` cells from a peer cost extra, and no rover
+  moves farther than `R_radio - 2` from a peer, so the swarm stays together.
+  When its own area is explored, a rover helps a peer, and then the swarm
+  moves on to new terrain together. A rover that loses contact drives back
+  to where it last heard the others. When the swarm is stretched to the edge
+  of radio range, the rover with the lowest id in contact leads: it waits and
+  the others drive towards it, so rovers never bounce back and forth there.
+- No circling: when there is nothing new next to an emotional rover (e.g. it
+  stands in a small pocket of safe cells surrounded by terrain it fears), it
+  plans an A* route to the nearest unvisited cell, with fear as a cost. If no
+  detour exists it crosses the feared terrain on purpose and does not retreat
+  halfway, as in goal navigation.
+
+### Other mechanics
+
+- **Overturn recovery:** 3 steps standing still (2% battery per step); stress keeps rising.
+- **Solar charging:** below 40% battery the rover drives to the nearest known
+  safe regolith and charges 5% per step up to 90%.
+
+All parameters live in `config/config.py` (`SimulationConfig`,
+`HomeostatConfig`) with comments.
+
+## Analysis output
+
+`uv run analyze` writes to `results/analysis/`:
+
+| File | Contents |
+|---|---|
+| `report.md` | Tables per test, details, significance tests, figures, column reference. |
+| `summary.csv` | One row per variant and test (rates with 95% CI, means). |
+| `simulations.csv` | One row per simulation. |
+| `significance.csv` | Paired tests against the plain algorithm. |
+| `plots/survival.png` | Rover survival per test with 95% CI. |
+| `plots/goal_completion.png` | Route completion in the goal test. |
+| `plots/coverage.png` | Terrain discovered per simulation (exploration). |
+| `plots/time_series_<test>.png` | Rovers still operational, mean stress and discovered terrain over time. |
+| `plots/swarm_stress_map_<test>.png` | Swarm stress map: routes coloured by stress, the highest stress per cell, fear imprints and lost rovers. |
+
+## Project structure
+
+| Path | Contents |
+|---|---|
+| `config/config.py` | All parameters, validation, JSON round-trip, config hash. |
+| `src/environment/` | `terrain.py` (terrain classes and effects), `generator.py` (seeded Perlin map). |
+| `src/agents/` | `rover.py` (Pioneer 3-DX: sensors, short-term memory, imprinting, recovery, sand, charging), `homeostat.py`, `fear.py`, specification notes `instruction.md`, `rover_moving_instruction.md`. |
+| `src/navigation/` | `strategies.py` (`online`, `emotional`, `swarm_emotional`), `planning.py` (A*), `energy.py` (drive to charge), `observation.py`, `board.py`, `registry.py`, `types.py`, `scaffold.py` (non-scientific walker). |
+| `src/communication/` | `radio.py` (packets), `swarm.py` (broadcast and delivery). |
+| `src/model/` | `model.py` (Mesa `HexMultiGrid` model, spawning, multi-leg goals, termination), `types.py` (hex geometry). |
+| `src/simulation/session.py` | JSON snapshots for the viewer and headless runs. |
+| `src/analytics/` | `metrics.py`, `analysis_plots.py` (figures of `analyze`), `study_plots.py` (figures of `study`), `benchmark.py`, `plots.py`, `reporting.py`, `results.py` (batch pipeline). |
+| `root/` | `analyze.py` (main experiment), `study.py` (held-out study), `run.py` (`simulate`), `batch_run.py` (`batch-run`). |
+| `server/` | `server.py`, `simulation_runtime.py`, `terrain_data.py`, `index.html`, `styles.css`, `js/` (Three.js scene, terrain, rover models, panels), `textures/`, `models/`. |
+| `show_map.py` | Terrain preview (`show_map`). |
+| `tests/` | 64 tests in 16 files, including `test_paper_mechanisms.py`, `test_swarm_exploration.py` and `test_navigation_loops.py`. |
+
+Rover statuses shown in the viewer: `active`, `charging`, `recovering`,
+`digging_out`, `overturned`, `destroyed`, `goal_reached`.
 
 ## Known limitations
 
-- The simulation is a discrete hex-grid abstraction, not a physics-level
-  reproduction of CoppeliaSim/V-REP.
-- RGB signatures are class-level optical descriptors; real camera textures and
-  lighting are not simulated.
-- The scaffold strategy is only a pipeline fixture; its results are stamped
-  **not scientific**.
-- The papers motivate the mechanism; their reported percentages are not claimed
-  to be reproduced by this grid experiment.
-- The live viewer uses CDN-hosted Three.js and requires WebGL in the browser.
+- A discrete hex-grid abstraction, not a physics simulation like CoppeliaSim.
+- All cells of one terrain type share one colour, so a fear generalises to the
+  whole terrain type (camera noise makes recognition imperfect).
+- The papers motivate the mechanism; their percentages are not claimed to be
+  reproduced exactly.
+- The viewer loads Three.js from a CDN and needs WebGL.
 
 ## References
 
-- Bielecki, Bielecka, Bielecki (2017), *Conditioned Anxiety Mechanism as a Basis
-  for a Procedure of Control Module of an Autonomous Robot*, ICAISC 2017,
-  LNAI 10246, pp. 390–398.
-- Bielecki & Bielecki (2025), *Functional properties of the autonomous robot
-  equipped with the model of conditioned anxiety* (`2025_Space_Konf_cor3.docx`).
-- Internal specifications: `src/agents/instruction.md`,
-  `src/agents/rover_moving_instruction.md`.
-
-## Legacy notes
-
-- The project does **not** use Mesa's `ModularServer`; the browser view is the
-  custom Three.js server in `server/`.
-- `fuzzy_controller.py` is not part of the current scientific scope; the
-  navigation comparison is defined by the three variants above.
-- `HexGrid` in older documentation is replaced by `HexMultiGrid` because
-  terrain and rovers share cells.
+- Bielecki A., Bielecka M., Bielecki P. (2017). *Conditioned Anxiety Mechanism
+  as a Basis for a Procedure of Control Module of an Autonomous Robot*.
+  ICAISC 2017, LNAI 10246, pp. 390–398 (`ICAISC_2017.pdf`).
+- Bielecki A., Bielecki R. (2025). *Functional properties of the autonomous
+  robot equipped with the model of conditioned anxiety*
+  (`2025_Space_Konf_cor3.docx`).
