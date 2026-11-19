@@ -14,6 +14,7 @@ from collections.abc import Callable
 
 from src.model.types import Position
 from src.navigation.board import HexGridBoard
+from src.navigation.costs import TerrainCost, mean_cost
 from src.navigation.types import NavigationDecision, Observation, TerrainObservation
 
 SAFE_TERRAIN = "SafeRegolith"
@@ -34,6 +35,7 @@ def seek_charging_spot(
     observation: Observation,
     board: HexGridBoard,
     fear_cost: Callable[[TerrainObservation], float] | None = None,
+    terrain_cost: TerrainCost = mean_cost,
 ) -> NavigationDecision | None:
     """Return the first step towards the nearest known safe cell, if needed.
 
@@ -74,7 +76,7 @@ def seek_charging_spot(
                 continue
             if neighbour in observation.lidar_obstacles:
                 continue
-            step_cost = cell.movement_cost
+            step_cost = terrain_cost(cell)
             if fear_cost is not None:
                 step_cost += fear_cost(cell)
             new_cost = cost_so_far + step_cost

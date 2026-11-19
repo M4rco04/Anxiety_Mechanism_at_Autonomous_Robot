@@ -28,6 +28,21 @@ DEFAULT_TERRAIN_COSTS: dict[str, float] = {
     "Boulders": math.inf,
 }
 
+# Spread (std) of the route cost. ``terrain_costs`` is the mean; the std is
+# the mean times the coefficient of variation of the battery drain of one
+# entry (Monte Carlo of ``apply_effect``; shadow over exposures 1-4, slope
+# over 30-42 deg). Only energy: multi-step events (stuck in sand, overturn
+# recovery) and damage are what the anxiety has to learn, so they are left out.
+DEFAULT_TERRAIN_COST_STD: dict[str, float] = {
+    "SafeRegolith": 0.17,
+    "LooseSand": 0.71,
+    "Ventifacts": 0.22,
+    "SteepSlope": 0.43,
+    "DeepShadow": 0.32,
+    "DustStorm": 0.45,
+    "Boulders": 0.0,
+}
+
 DEFAULT_TERRAIN_RISK: dict[str, float] = {
     "SafeRegolith": 0.0,
     "LooseSand": 0.15,
@@ -86,6 +101,23 @@ class HomeostatConfig:
     # chronic_alarm = 0 disables it.
     chronic_rest: float = 10.0
     chronic_alarm: float = 40.0
+    # Optional leaky accumulator: every step all sums are multiplied by
+    # ``chronic_retention`` (e.g. 0.9 = half-life of ~6.6 steps), so
+    # occasional mild losses are forgotten. 1.0 = no leak (default): the sums
+    # grow during the whole mission. Off because on maps 0-199 the leak cost
+    # the anxious rover 4-5 points of survival in exploration (it learned
+    # sand and shadow later) and gained nothing significant in the goal test.
+    chronic_retention: float = 1.0
+    # Graded fear: the imprint intensity follows the size of the danger
+    # instead of always being 1.0. An acute or slip alarm imprints
+    # clamp(S_inst / fear_full_stress, acute_min_intensity, 1); a chronic
+    # alarm imprints ``chronic_intensity``. Repeated imprints of the same
+    # terrain add up (``learn_fear``), so a fear grows with experience.
+    # graded_fear = False restores the all-or-nothing imprint (1.0).
+    graded_fear: bool = True
+    fear_full_stress: float = 80.0
+    acute_min_intensity: float = 0.5
+    chronic_intensity: float = 0.35
 
     @classmethod
     def specification(cls) -> HomeostatConfig:
@@ -99,6 +131,7 @@ class HomeostatConfig:
             imprint_on_instantaneous=False,
             slip_alarm_steps=0,
             chronic_alarm=0.0,
+            graded_fear=False,
         )
 
     def validate(self) -> None:
@@ -130,6 +163,13 @@ class HomeostatConfig:
             raise ValueError("Homeostat reimprint_below must be in [0, 1]")
         if not 0.0 <= self.s_crit <= 100.0:
             raise ValueError("Homeostat s_crit must be in [0, 100]")
+        if not 0.0 <= self.chronic_retention <= 1.0:
+            raise ValueError("Homeostat chronic_retention must be in [0, 1]")
+        if not math.isfinite(self.fear_full_stress) or self.fear_full_stress <= 0:
+            raise ValueError("Homeostat fear_full_stress must be positive")
+        for name in ("acute_min_intensity", "chronic_intensity"):
+            if not 0.0 < getattr(self, name) <= 1.0:
+                raise ValueError(f"Homeostat {name} must be in (0, 1]")
 
 
 @dataclass(frozen=True)
@@ -222,10 +262,22 @@ class SimulationConfig:
     terrain_costs: Mapping[str, float] = field(
         default_factory=lambda: dict(DEFAULT_TERRAIN_COSTS)
     )
+    terrain_cost_std: Mapping[str, float] = field(
+        default_factory=lambda: dict(DEFAULT_TERRAIN_COST_STD)
+    )
     terrain_risk: Mapping[str, float] = field(
         default_factory=lambda: dict(DEFAULT_TERRAIN_RISK)
     )
     max_slope_deg: float = 90.0
+    # Risk-sensitive route cost: the planners use
+    #     (mean + lambda * std) / (1 + lambda * std_SafeRegolith)
+    # (terrain_costs, terrain_cost_std) instead of the mean alone, so a
+    # terrain with an uncertain cost looks more expensive; safe regolith stays
+    # at 1, the unit of all other route constants. ``risk_aversion`` is lambda for every variant. The
+    # anxious variants add ``stress_risk_aversion`` * min(1, S / S_crit):
+    # a stressed anxious rover is more cautious (0 = off).
+    risk_aversion: float = 0.5
+    stress_risk_aversion: float = 1.5
 
     # Loose sand can bog the rover down (the Spirit scenario from Bielecki &
     # Bielecki 2025). On entering sand the rover gets stuck with
@@ -280,6 +332,7 @@ class SimulationConfig:
         # them once so callers cannot accidentally share/update a dictionary.
         object.__setattr__(self, "terrain_costs", dict(self.terrain_costs))
         object.__setattr__(self, "terrain_risk", dict(self.terrain_risk))
+        object.__setattr__(self, "terrain_cost_std", dict(self.terrain_cost_std))
         if self.targets is not None:
             object.__setattr__(self, "targets", tuple(tuple(p) for p in self.targets))
 
@@ -366,6 +419,11 @@ class SimulationConfig:
         for name, risk in self.terrain_risk.items():
             if not 0.0 <= risk <= 1.0:
                 raise ValueError(f"Terrain risk for {name} must be in [0, 1]")
+        for name, std in self.terrain_cost_std.items():
+            if not math.isfinite(std) or std < 0:
+                raise ValueError(f"Terrain cost std for {name} must be finite and >= 0")
+        if self.risk_aversion < 0 or self.stress_risk_aversion < 0:
+            raise ValueError("risk_aversion and stress_risk_aversion must be >= 0")
 
         if self.mission_mode == "exploration" and self.targets is not None:
             raise ValueError("Explicit targets are only allowed in goal_navigation mode")
@@ -402,6 +460,11 @@ class SimulationConfig:
         risk = raw.get("terrain_risk")
         if isinstance(risk, Mapping):
             raw["terrain_risk"] = {key: float(value) for key, value in risk.items()}
+        cost_std = raw.get("terrain_cost_std")
+        if isinstance(cost_std, Mapping):
+            raw["terrain_cost_std"] = {
+                key: float(value) for key, value in cost_std.items()
+            }
         if raw.get("targets") is not None:
             raw["targets"] = tuple(tuple(p) for p in raw["targets"])
         # Ignore unknown keys from older/newer experiment files when possible.
@@ -434,6 +497,7 @@ DEFAULT_CONFIG.validate()
 __all__ = [
     "DEFAULT_CONFIG",
     "DEFAULT_TERRAIN_COSTS",
+    "DEFAULT_TERRAIN_COST_STD",
     "DEFAULT_TERRAIN_RISK",
     "MISSION_MODES",
     "NAVIGATION_MODES",

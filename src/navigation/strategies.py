@@ -23,6 +23,7 @@ from collections.abc import Callable, Mapping
 from config.config import SimulationConfig
 from src.model.types import Position, hex_distance
 from src.navigation.board import HexGridBoard
+from src.navigation.costs import TerrainCost, mean_cost, risk_cost, stress_aversion
 from src.navigation.energy import seek_charging_spot
 from src.navigation.exploration import (
     KEEP_TARGET_BONUS,
@@ -56,15 +57,21 @@ def _bounce_cells(rover) -> frozenset[Position]:
 
 
 def _retreat_decision(
-    rover, board: HexGridBoard, actions: list[Position], cell_cost: CellCost
+    rover,
+    board: HexGridBoard,
+    actions: list[Position],
+    cell_cost: CellCost,
+    safe_level: float = math.inf,
 ) -> NavigationDecision | None:
     """Step back to a neighbour the rover fears (distrusts) less.
 
     The cost is read from terrain the rover has seen (also cells behind it);
-    a neighbour it has never seen is not a safe place to retreat to.
-    If no neighbour is better (e.g. inside a large shadow area), returns
-    ``None`` so the strategy keeps navigating normally instead of
-    oscillating between two equally feared cells.
+    a neighbour it has never seen is not a safe place to retreat to. Only a
+    neighbour below ``safe_level`` (the retreat threshold) counts: stepping
+    from one strongly feared terrain onto another is not a retreat (e.g. from
+    a slope back into the sand it just dug out of, and back again).
+    If no neighbour qualifies (e.g. inside a large shadow area), returns
+    ``None`` so the strategy takes the cheapest way out instead.
     """
 
     def cost_at(position: Position) -> float:
@@ -75,7 +82,8 @@ def _retreat_decision(
     safer = [
         action
         for action in actions
-        if action in rover.known_terrain and cost_at(action) < current
+        if action in rover.known_terrain
+        and cost_at(action) < min(current, safe_level)
     ]
     if not safer:
         return None
@@ -99,6 +107,7 @@ def _escape_decision(
     board: HexGridBoard,
     cell_cost: CellCost,
     level: float,
+    terrain_cost: TerrainCost = mean_cost,
 ) -> NavigationDecision | None:
     """First step of the cheapest way out of feared (distrusted) terrain.
 
@@ -130,7 +139,7 @@ def _escape_decision(
                 or neighbour in observation.lidar_obstacles
             ):
                 continue
-            new_cost = cost_so_far + info.movement_cost + cell_cost(info)
+            new_cost = cost_so_far + terrain_cost(info) + cell_cost(info)
             if new_cost < distance.get(neighbour, math.inf):
                 distance[neighbour] = new_cost
                 first[neighbour] = neighbour if position == start else first[position]
@@ -145,6 +154,8 @@ class _StrategyBase:
     SCIENTIFIC = True
     GOAL_REASON = "goal navigation"
     EXPLORE_REASON = "exploration"
+    # Anxious variants: stress raises the risk aversion of the route cost.
+    STRESS_AVERSE = False
 
     def __init__(self, config: SimulationConfig, seed: int = 0) -> None:
         self.config = config
@@ -160,6 +171,10 @@ class _StrategyBase:
         self.h_cost: dict[Position, float] = {}
         # Unseen cell the rover is currently driving to (exploration).
         self._explore_target: Position | None = None
+        # Risk-sensitive terrain cost of the current decision.
+        self._terrain_cost: TerrainCost = mean_cost
+        # Fear events seen at the last decision (a new one ends a crossing).
+        self._fear_events = 0
 
     def reset_for_new_goal(self) -> None:
         """Called by the mission controller when the next waypoint is set."""
@@ -182,11 +197,28 @@ class _StrategyBase:
 
         return math.inf
 
+    def _risk_aversion(self, rover) -> float:
+        """Lambda of ``mean + lambda * std`` for this decision."""
+
+        base = float(self.config.risk_aversion)
+        if not self.STRESS_AVERSE:
+            return base
+        return stress_aversion(
+            base,
+            float(self.config.stress_risk_aversion),
+            float(rover.stress_level),
+            float(self.config.homeostat.s_crit),
+        )
+
     def choose_next(
         self, rover, observation: Observation
     ) -> NavigationDecision | None:
         """Decide the next step; look first at a neighbour never seen."""
 
+        self._terrain_cost = risk_cost(
+            self._risk_aversion(rover),
+            float(self.config.terrain_cost_std.get("SafeRegolith", 0.0)),
+        )
         decision = self._decide(rover, observation)
         if (
             decision is not None
@@ -238,7 +270,9 @@ class _StrategyBase:
             )
 
         # Low battery: go to the nearest known safe cell to charge.
-        charge = seek_charging_spot(rover, observation, board, cell_cost)
+        charge = seek_charging_spot(
+            rover, observation, board, cell_cost, terrain_cost=self._terrain_cost
+        )
         if charge is not None:
             self._moves += 1
             return board, actions, charge
@@ -275,7 +309,12 @@ class _StrategyBase:
 
         if targets is None:
             targets = frontier_targets(
-                rover, observation, board, cell_cost, max_aversion=self._max_aversion()
+                rover,
+                observation,
+                board,
+                cell_cost,
+                max_aversion=self._max_aversion(),
+                terrain_cost=self._terrain_cost,
             )
         home: Position | None = rover.path[0] if rover.path else None
         chosen = choose_target(
@@ -320,7 +359,9 @@ class OnlineSearchStrategy(_StrategyBase):
         if observation.mission_mode == "goal_navigation":
             target = observation.target
             assert target is not None
-            planned = plan_first_step(rover, observation, board, target)
+            planned = plan_first_step(
+                rover, observation, board, target, terrain_cost=self._terrain_cost
+            )
             if planned is not None:
                 self._moves += 1
                 return NavigationDecision(planned[0], self.GOAL_REASON, "moving")
@@ -333,7 +374,11 @@ class OnlineSearchStrategy(_StrategyBase):
 
             def goal_key(action: Position):
                 terrain = observation.visible_cells.get(action)
-                cost = terrain.movement_cost if terrain else board.movement_cost(action)
+                cost = (
+                    self._terrain_cost(terrain)
+                    if terrain
+                    else board.movement_cost(action)
+                )
                 visited_penalty = 1.5 if action in observation.visited else 0.0
                 return (cost + self.h_cost[action] + visited_penalty, action)
 
@@ -371,6 +416,15 @@ class _AverseStrategy(_StrategyBase):
     def _max_aversion(self) -> float:
         return float(self.config.explore_max_aversion) * self._weight()
 
+    def _retreat_level(self) -> float:
+        """Extra cost below which a neighbour is a place to retreat to.
+
+        The same level that makes the rover retreat (fear 0.5 or a fuzzy
+        caution of 0.5): a cell the rover would retreat from is not a refuge.
+        """
+
+        return float(self.config.retreat_fear_threshold) * self._weight()
+
     def _cell_cost(self, rover, observation: Observation) -> CellCost:
         raise NotImplementedError
 
@@ -398,7 +452,9 @@ class _AverseStrategy(_StrategyBase):
 
         target = observation.target
         assert target is not None
-        planned = plan_first_step(rover, observation, board, target, cell_cost)
+        planned = plan_first_step(
+            rover, observation, board, target, cell_cost, self._terrain_cost
+        )
         if planned is not None:
             chosen, extra = planned
         else:
@@ -416,7 +472,11 @@ class _AverseStrategy(_StrategyBase):
 
             def total(action: Position) -> float:
                 terrain = observation.visible_cells.get(action)
-                cost = terrain.movement_cost if terrain else board.movement_cost(action)
+                cost = (
+                    self._terrain_cost(terrain)
+                    if terrain
+                    else board.movement_cost(action)
+                )
                 return cost + extra_of(action) + h(action)
 
             chosen = min(actions, key=lambda action: (total(action), action))
@@ -447,12 +507,29 @@ class _AverseStrategy(_StrategyBase):
         if decision is not None:
             return decision
 
+        # A new fear (own alarm or one received by radio) while crossing on
+        # purpose: the crossing was decided with weaker fear, so reconsider
+        # it. With graded fear a weak (chronic) fear does not make the rover
+        # retreat, but it may drive on and get a stronger shock; that shock
+        # must be able to turn it back.
+        fear_events = int(getattr(rover, "fear_events_own", 0)) + int(
+            getattr(rover, "fear_events_received", 0)
+        )
+        if fear_events != self._fear_events:
+            self._fear_events = fear_events
+            self._crossing = False
+
         # On strongly feared terrain: step back to a less feared neighbour.
         if not self._crossing and self._wants_retreat(rover, observation, cell_cost):
             retreat = _retreat_decision(
-                rover, board, actions, cell_cost
+                rover, board, actions, cell_cost, self._retreat_level()
             ) or _escape_decision(
-                rover, observation, board, cell_cost, self._block_level()
+                rover,
+                observation,
+                board,
+                cell_cost,
+                self._block_level(),
+                self._terrain_cost,
             )
             if retreat is not None:
                 self._retreats += 1
@@ -461,7 +538,27 @@ class _AverseStrategy(_StrategyBase):
 
         if observation.mission_mode == "goal_navigation":
             return self._goal_step(rover, observation, board, actions, cell_cost)
-        return self._explore_decision(rover, observation, board, cell_cost)
+        decision = self._explore_decision(rover, observation, board, cell_cost)
+        if decision.status == "exploration_complete":
+            # Nothing left to explore, but do not stop on feared terrain
+            # (e.g. deep inside a shadow area): get out to ground the rover
+            # does not fear first.
+            current = rover.known_terrain.get(observation.position)
+            if current is not None and cell_cost(current) >= self._block_level():
+                escape = _escape_decision(
+                    rover,
+                    observation,
+                    board,
+                    cell_cost,
+                    self._block_level(),
+                    self._terrain_cost,
+                )
+                if escape is not None:
+                    self._crossing = False
+                    self._retreats += 1
+                    self._moves += 1
+                    return escape
+        return decision
 
 
 class EmotionalStrategy(_AverseStrategy):
@@ -469,6 +566,7 @@ class EmotionalStrategy(_AverseStrategy):
 
     GOAL_REASON = "emotional goal navigation"
     EXPLORE_REASON = "emotional exploration"
+    STRESS_AVERSE = True
 
     def _cell_cost(self, rover, observation: Observation) -> CellCost:
         if not rover.anxiety_memory:
@@ -614,7 +712,9 @@ class SwarmEmotionalStrategy(EmotionalStrategy):
                 if hex_distance(position, last) <= near:
                     del self.peer_memory[peer_id]
                     continue
-                planned = plan_first_step(rover, observation, board, last, cell_cost)
+                planned = plan_first_step(
+                    rover, observation, board, last, cell_cost, self._terrain_cost
+                )
                 # A strongly feared first step: let the common rule handle it.
                 if (
                     planned is not None
@@ -740,7 +840,9 @@ class SwarmEmotionalStrategy(EmotionalStrategy):
         if hex_distance(observation.position, leader) <= close:
             self.following = False
             return None
-        planned = plan_first_step(rover, observation, board, leader, cell_cost)
+        planned = plan_first_step(
+            rover, observation, board, leader, cell_cost, self._terrain_cost
+        )
         if planned is None:
             self.following = False
             return None
@@ -769,6 +871,7 @@ class SwarmEmotionalStrategy(EmotionalStrategy):
             cell_cost,
             limit=SWARM_TARGETS,
             max_aversion=self._max_aversion(),
+            terrain_cost=self._terrain_cost,
         )
         peers = observation.swarm_peers
         if self.config.swarm_split_area:

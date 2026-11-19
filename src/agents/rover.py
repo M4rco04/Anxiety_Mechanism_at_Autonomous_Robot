@@ -686,6 +686,12 @@ class Pioneer3DXAgent(mesa.Agent):
         """Add up sub-threshold stress per terrain; True at the alarm level."""
 
         homeostat = self.model.config.homeostat
+        # Leaky accumulator: old sums fade every step, so only a sustained
+        # loss reaches the alarm, not occasional mild ones over the mission.
+        retention = float(homeostat.chronic_retention)
+        if retention < 1.0:
+            for known in self.chronic_stress:
+                self.chronic_stress[known] *= retention
         limit = float(homeostat.chronic_alarm)
         excess = stress - float(homeostat.chronic_rest)
         if limit <= 0 or excess <= 0:
@@ -716,6 +722,7 @@ class Pioneer3DXAgent(mesa.Agent):
             if self.emotional_enabled:
                 signature = self.current_signature()
                 alarm = reading.critical
+                intensity = self._acute_intensity(reading)
                 if not alarm and signature is not None:
                     # Only real losses add up (battery, slip, damage), not
                     # the slope term, which is a warning and not a loss.
@@ -724,12 +731,14 @@ class Pioneer3DXAgent(mesa.Agent):
                     )
                     alarm = self._chronic_alarm(signature, losses)
                     self.chronic_imprints += int(alarm)
+                    if homeostat.graded_fear:
+                        intensity = float(homeostat.chronic_intensity)
                 if (
                     alarm
                     and signature is not None
                     and self.fear_intensity(signature) < homeostat.reimprint_below
                 ):
-                    self._imprint(signature)
+                    self._imprint(signature, intensity)
             self.stress_armed = self.stress_level < (
                 homeostat.s_crit * homeostat.rearm_factor
             )
@@ -859,9 +868,26 @@ class Pioneer3DXAgent(mesa.Agent):
         else:
             self._update_mission_status()
 
-    def _imprint(self, signature: RGB) -> None:
+    def _acute_intensity(self, reading: HomeostatReading) -> float:
+        """Imprint intensity of an acute (or slip) alarm.
+
+        Graded fear: the bigger the stress, the stronger the fear, from
+        ``acute_min_intensity`` at the threshold up to 1 at
+        ``fear_full_stress``. Without grading every imprint is 1.0.
+        """
+
+        homeostat = self.model.config.homeostat
+        if not homeostat.graded_fear:
+            return 1.0
+        return clamp(
+            reading.instantaneous / float(homeostat.fear_full_stress),
+            float(homeostat.acute_min_intensity),
+            1.0,
+        )
+
+    def _imprint(self, signature: RGB, intensity: float = 1.0) -> None:
         self.learn_fear(
-            signature, intensity=1.0, source="self", source_position=self.pos
+            signature, intensity=intensity, source="self", source_position=self.pos
         )
         self.model.record_event(
             "fear_imprint",
@@ -871,18 +897,19 @@ class Pioneer3DXAgent(mesa.Agent):
         )
         if self.navigation_mode == "swarm_emotional":
             self.broadcast_danger(signature, self.pos)
-        self._imprint_context(signature)
+        self._imprint_context(signature, intensity)
 
-    def _imprint_context(self, signature: RGB) -> None:
+    def _imprint_context(self, signature: RGB, strength: float = 1.0) -> None:
         """Associate the circumstances that preceded the alarm.
 
         Everything in short-term memory before the current cell is imprinted
-        with ``context_imprint_weight``, weakened for familiar terrain
-        (latent inhibition), so the rover avoids also what led to the danger.
+        with ``context_imprint_weight`` times the strength of the main imprint,
+        weakened for familiar terrain (latent inhibition), so the rover avoids
+        also what led to the danger.
         """
 
         config = self.model.config
-        weight = float(config.context_imprint_weight)
+        weight = float(config.context_imprint_weight) * float(strength)
         if weight <= 0:
             return
         tolerance = float(config.fear_rgb_tolerance)

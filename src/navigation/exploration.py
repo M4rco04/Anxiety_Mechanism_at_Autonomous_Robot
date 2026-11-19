@@ -21,6 +21,7 @@ from dataclasses import dataclass
 
 from src.model.types import Position, hex_distance
 from src.navigation.board import HexGridBoard
+from src.navigation.costs import TerrainCost, mean_cost
 from src.navigation.planning import UNKNOWN_CELL_COST
 from src.navigation.types import Observation, TerrainObservation
 
@@ -53,6 +54,7 @@ def frontier_targets(
     cell_cost: CellCost | None = None,
     limit: int = NEAREST_TARGETS,
     max_aversion: float = math.inf,
+    terrain_cost: TerrainCost = mean_cost,
 ) -> list[ExploreTarget]:
     """The nearest unseen cells, cheapest route first.
 
@@ -109,7 +111,7 @@ def frontier_targets(
             extra = aversion(info)
             if averse[position] + extra > max_aversion:
                 continue
-            new_cost = cost_so_far + info.movement_cost + extra
+            new_cost = cost_so_far + terrain_cost(info) + extra
             if new_cost < distance.get(neighbour, math.inf):
                 distance[neighbour] = new_cost
                 averse[neighbour] = averse[position] + extra

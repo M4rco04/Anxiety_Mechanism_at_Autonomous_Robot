@@ -30,6 +30,7 @@ def _terrain_observation(
         slope=float(terrain.slope),
         occupied_by_rover=occupied,
         visited=position in rover.visited,
+        movement_cost_std=terrain.movement_cost_std,
     )
 
 

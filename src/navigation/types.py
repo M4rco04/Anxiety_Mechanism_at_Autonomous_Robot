@@ -32,6 +32,8 @@ class TerrainObservation:
     slope: float
     occupied_by_rover: bool
     visited: bool
+    # Spread (std) of the route cost; ``movement_cost`` is its mean.
+    movement_cost_std: float = 0.0
 
 
 @dataclass(frozen=True)

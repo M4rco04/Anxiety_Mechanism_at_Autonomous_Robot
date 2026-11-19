@@ -15,6 +15,7 @@ from collections.abc import Callable
 
 from src.model.types import Position
 from src.navigation.board import HexGridBoard
+from src.navigation.costs import TerrainCost, mean_cost
 from src.navigation.types import Observation, TerrainObservation
 
 UNKNOWN_CELL_COST = 1.0
@@ -26,10 +27,12 @@ def plan_first_step(
     board: HexGridBoard,
     target: Position,
     fear_cost: Callable[[TerrainObservation], float] | None = None,
+    terrain_cost: TerrainCost = mean_cost,
 ) -> tuple[Position, float] | None:
     """Return ``(first step, fear cost of that step)`` of the cheapest route.
 
-    ``fear_cost`` maps a known cell to its extra cost (fear or caution).
+    ``fear_cost`` maps a known cell to its extra cost (fear or caution);
+    ``terrain_cost`` gives its (risk-sensitive) terrain cost.
     """
 
     start = observation.position
@@ -44,7 +47,7 @@ def plan_first_step(
             return UNKNOWN_CELL_COST
         if not info.traversable:
             return math.inf
-        cost = info.movement_cost
+        cost = terrain_cost(info)
         if fear_cost is not None:
             cost += fear_cost(info)
         return cost

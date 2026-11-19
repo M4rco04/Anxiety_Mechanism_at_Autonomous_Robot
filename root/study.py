@@ -54,6 +54,10 @@ ABLATIONS: list[tuple[str, dict[str, Any]]] = [
     ("No fear decay", {"fear_decay": 0.0}),
     ("No crossing limit in exploration", {"explore_max_aversion": 1000.0}),
     ("No look before step", {"look_before_step": False}),
+    ("All-or-nothing fear (no grading)", {"homeostat": HomeostatConfig(graded_fear=False)}),
+    ("Leaky accumulated stress (0.9)", {"homeostat": HomeostatConfig(chronic_retention=0.9)}),
+    ("No stress-driven risk aversion", {"stress_risk_aversion": 0.0}),
+    ("Risk-neutral route cost", {"risk_aversion": 0.0, "stress_risk_aversion": 0.0}),
 ]
 
 SENSITIVITY: dict[str, tuple[str, list[float], float]] = {

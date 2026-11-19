@@ -75,6 +75,11 @@ class TerrainPatch(mesa.Agent):
         return float(costs.get(type(self).__name__, 1.0))
 
     @property
+    def movement_cost_std(self) -> float:
+        spreads = getattr(self.model.config, "terrain_cost_std", {})
+        return float(spreads.get(type(self).__name__, 0.0))
+
+    @property
     def damage_risk(self) -> float:
         risks = getattr(self.model.config, "terrain_risk", {})
         return float(risks.get(type(self).__name__, 0.0))
@@ -106,8 +111,7 @@ class SafeRegolith(TerrainPatch):
     color = "#d2b48c"
 
     def apply_effect(self, rover: Pioneer3DXAgent) -> None:
-        mean_drain = 0.1 + (0.2 * rover.current_speed)
-        drain = self._rng(rover).normal(loc=mean_drain, scale=0.05)
+        drain = self._rng(rover).normal(loc=0.3, scale=0.05)
         rover.battery -= max(0.05, float(drain))
         self._clamp_rover(rover)
 
@@ -121,11 +125,8 @@ class Boulders(TerrainPatch):
 
     def apply_effect(self, rover: Pioneer3DXAgent) -> None:
         # Defensive fallback: a correct navigation strategy never enters here.
-        collision_prob = min(0.9, rover.current_speed * 0.4)
-        if self._rng(rover).random() < collision_prob:
-            damage = self._rng(rover).normal(
-                loc=15.0 * rover.current_speed, scale=4.0
-            )
+        if self._rng(rover).random() < 0.4:
+            damage = self._rng(rover).normal(loc=15.0, scale=4.0)
             rover.hull_condition -= max(0.0, float(damage))
         rover.current_speed = 0.0
         rover.battery -= max(0.0, float(self._rng(rover).normal(loc=1.5, scale=0.3)))
@@ -140,14 +141,11 @@ class LooseSand(TerrainPatch):
 
     def apply_effect(self, rover: Pioneer3DXAgent) -> None:
         rng = self._rng(rover)
-        alpha = 2.0 + rover.current_speed
-        beta_param = 5.0 / max(0.1, rover.current_speed)
-        slip_factor = float(rng.beta(a=alpha, b=beta_param))
+        slip_factor = float(rng.beta(a=3.0, b=5.0))
         rover.current_speed *= max(0.0, 1.0 - slip_factor)
 
-        drain = float(
-            rng.lognormal(mean=0.5 + rover.current_speed, sigma=0.3)
-        )
+        # Spinning wheels cost energy: more slip, more drain.
+        drain = float(rng.lognormal(mean=0.75 + slip_factor, sigma=0.3))
         rover.battery -= max(0.0, drain)
         # Grinding sand wears the wheels.
         rover.wheel_condition -= max(0.0, float(rng.normal(loc=0.5, scale=0.2)))
@@ -163,15 +161,14 @@ class LooseSand(TerrainPatch):
 
 
 class Ventifacts(TerrainPatch):
-    """Sharp rocks that damage wheels; invisible to LIDAR."""
+    """Sharp rocks that damage wheels; LIDAR sees only boulders, not these."""
 
     terrain_type = TerrainType.VENTIFACTS
     color = "#8b4513"
 
     def apply_effect(self, rover: Pioneer3DXAgent) -> None:
         rng = self._rng(rover)
-        scale_damage = 6.0 * rover.current_speed
-        damage = float(rng.exponential(scale=max(1.0, scale_damage)))
+        damage = float(rng.exponential(scale=6.0))
         rover.wheel_condition -= max(0.0, damage)
         # Sharp rocks also hit the chassis.
         rover.hull_condition -= max(0.0, float(rng.exponential(scale=1.0)))
@@ -193,7 +190,7 @@ class SteepSlope(TerrainPatch):
         )
         rover.battery -= max(0.1, drain)
 
-        steepness_factor = self.slope - 30.0 + (rover.current_speed * 4.0)
+        steepness_factor = self.slope - 26.0
         fall_prob = 1.0 / (1.0 + math.exp(-0.25 * steepness_factor))
         if rng.random() < fall_prob:
             rover.is_overturned = True
@@ -232,11 +229,13 @@ class DustStorm(TerrainPatch):
     color = "#b38b6d"
 
     def apply_effect(self, rover: Pioneer3DXAgent) -> None:
-        current_lambda = max(0.1, 2.5 - (0.4 * rover.dust_exposure_time))
-        rover.vision_range = int(
-            max(0, self._rng(rover).poisson(lam=current_lambda))
-        )
         rng = self._rng(rover)
+        # Each of the base_vision_range rings stays visible with probability
+        # p, which falls with time spent in the dust. A binomial is bounded by
+        # the normal range by construction: dust never improves visibility.
+        base_range = int(getattr(rover, "base_vision_range", rover.vision_range))
+        visibility = clamp(0.85 - 0.15 * rover.dust_exposure_time, 0.05, 1.0)
+        rover.vision_range = int(rng.binomial(n=max(0, base_range), p=visibility))
         rover.battery -= max(0.0, float(rng.normal(loc=1.2, scale=0.3)))
         # Abrasive dust wears wheels and hull.
         rover.wheel_condition -= max(0.0, float(rng.normal(loc=0.8, scale=0.3)))

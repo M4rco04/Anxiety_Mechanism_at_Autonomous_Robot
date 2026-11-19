@@ -156,59 +156,63 @@ fuzzy rover as a comparison without learning.
 
 ### Held-out study (`uv run study`, seeds 1000–1099, n = 100)
 
-Parameters were calibrated on seeds 0–39 and 5000–5159 and frozen; these
-maps were never used for tuning. Survival and route completion are per rover;
-p-values are paired and Holm-corrected. Full tables and figures:
-`results/study/report.md`.
+Parameters were calibrated on seeds 0–39 and 5000–5159, the choice of
+graded fear without the leaky accumulator was made on seeds 0–199, and then
+everything was frozen; these maps were never used for tuning or decisions.
+Survival and route completion are per rover; p-values are paired and
+Holm-corrected. Full tables and figures: `results/study/report.md`.
 
 | Condition | Exploration: survival | Exploration: terrain discovered | Goal: route completed |
 |---|---|---|---|
-| Plain ×1 | 10.0% | 39.5% | 75.0% |
-| Anxiety ×1 | **97.0%** | 59.9% | 82.0% |
-| Fuzzy rules ×1 | **100.0%** | 60.9% | 83.0% |W
-| Swarm: shared map only | 97.0% | 71.6% | 85.3% |
-| Swarm: map + fear | 96.3% | 73.4% | **86.7%** |
+| Plain ×1 | 9.0% | 40.0% | 74.0% |
+| Anxiety ×1 | **98.0%** | 59.9% | **88.0%** |
+| Fuzzy rules ×1 | **100.0%** | 63.7% | 81.0% |
+| Anxiety ×3 (no radio) | 96.3% | **78.4%** | 86.7% |
+| Swarm: shared map only | 97.3% | 72.8% | 88.7% |
+| Swarm: map + fear | **99.3%** | 70.9% | **89.0%** |
 
 What holds and what does not:
 
-- **The anxiety mechanism works in exploration.** Survival rises from 10% to
-  97% (single rover) and from 25% to 95% (three rovers), and discovered
-  terrain by 20 and 10 points; all p < 0.001 after correction.
-- **The fuzzy rover is not measurably better than the anxious one.** It
-  survives every run (100% vs 97%) and discovers 1 point more; neither
-  difference is significant. Rules that know every terrain in advance buy
-  only the last 3 points of survival; the anxious rover learns the rest
-  from its own accidents.
-- **No significant effect in the goal test with 100 maps** (anxiety +7
-  points, fuzzy +8 points; with 1,000 maps both are significant, see below).
-- **Swarm:** communication no longer raises survival in exploration, because
-  three anxious rovers without radio already survive 95% of the time.
-  Sharing the map *lowers* discovered terrain (78% → 72%, p < 0.001): rovers
-  that keep within radio range of each other cover less ground than three
-  independent ones. In the goal test the whole swarm communication helps
-  (+0.21 rovers per run complete the route, p = 0.012 after correction).
-- **Ablations:** the key element is still the damage-based homeostat (with
-  the specification homeostat survival drops to 26%, and 24 of 100 rovers
-  fear safe regolith) and the instantaneous-stress trigger (64% with the
-  smoothed one); both p < 0.001. The accumulated-stress alarm gives +10
-  points of survival in exploration but −9 points of completed routes in the
-  goal test; neither is significant after correction, so its value is not
-  established. The slip alarm, context imprinting, the crossing limit and
-  look-before-step have no measurable effect on the anxious rover on these
-  maps (without look-before-step 7 of 100 rovers end up fearing safe
-  regolith). Without fear decay all 100 rovers survive.
-- **Sensitivity:** survival hardly depends on `S_crit` (92–98% over 25–75)
-  or on the fear weight (92–100% over 5–100). Fear decay above 0.005/step
-  makes the rover forget too fast (0.02 → 76%, 0.05 → 62%).
-- **Camera noise:** the anxious rover is stable up to σ = 10 (93–97%), then
-  drops to 74% at σ = 15, 47% at σ = 20 and 19% at σ = 30. The swarm drops
-  too (83%, 63%, 34%). Since the rover now remembers and plans with what its
-  camera read, noise affects every part of the mechanism.
+- **The anxiety mechanism works in both tests.** In exploration survival
+  rises from 9% to 98% (single rover) and from 25% to 96% (three rovers), and
+  discovered terrain by 20 and 11 points; all p < 0.001. In the goal test the
+  anxious rover completes 88% of routes against 74% (p = 0.009); in the
+  previous version (82%) this difference was not significant on 100 maps.
+- **Learned fear versus expert rules.** The fuzzy rover survives every
+  exploration run (100% vs 98%) and discovers 4 points more (p = 0.31); in
+  the goal test it completes 7 points fewer routes than the anxious rover
+  (81% vs 88%, p = 0.55) and is not significantly better than the plain
+  rover. None of the anxious-vs-fuzzy differences is significant.
+- **Swarm:** communication does not raise survival (three anxious rovers
+  without radio already survive 96% of the time). Sharing the map *lowers*
+  discovered terrain (78% → 73%, p < 0.001): rovers that keep within radio
+  range of each other cover less ground than three independent ones. In the
+  goal test no swarm component has a significant effect on these maps.
+- **Ablations:** the key elements are the damage-based homeostat (with the
+  specification homeostat survival drops to 20%, and 25 of 100 rovers fear
+  safe regolith) and the instantaneous-stress trigger (48% with the smoothed
+  one); both p < 0.001. Every other element, including the new ones (graded
+  fear, the leaky accumulator, the risk-sensitive route cost), changes
+  survival or route completion by at most 6 points, none significantly on
+  100 maps. Graded fear was chosen on maps 0–199, where it raised route
+  completion by 4–5 points; here the all-or-nothing version completes 2
+  points fewer routes (86% vs 88%). Without look-before-step 5 of 100 rovers
+  end up fearing safe regolith.
+- **Sensitivity:** survival hardly depends on `S_crit` (92–98% over 25–75).
+  It falls with a small fear weight (5 → 82%, 10 → 90%; 30–100 → 98–100%):
+  graded fears are weaker, so a feared cell needs a high enough weight to be
+  avoided. Fear decay above 0.005/step makes the rover forget too fast
+  (0.02 and 0.05 → 76%).
+- **Camera noise:** the anxious rover is stable up to σ = 5 (97–98%), then
+  drops to 90% at σ = 10, 70% at σ = 15, 52% at σ = 20 and 22% at σ = 30. The
+  swarm is more robust (96%, 85%, 69%, 39%). Since the rover remembers and
+  plans with what its camera read, noise affects every part of the mechanism.
 
 ### Main experiment (`uv run analyze -n 1000`, seeds 0–999)
 
 8,000 simulations (1,000 maps × 4 variants × 2 tests). The seeds include the
-calibration maps 0–39 (the held-out maps of the study, 1000+, are not used).
+calibration maps 0–39 and the maps 0–199 on which graded fear and the leak
+were compared (the held-out maps of the study, 1000+, are not used).
 Brackets: 95% CI; p-values from paired tests against the plain algorithm
 (the same maps). Full report: `results/analysis/report.md`.
 
@@ -216,65 +220,85 @@ Brackets: 95% CI; p-values from paired tests against the plain algorithm
 
 | Variant | Rovers | Rover survival | Runs without losses | Terrain discovered [%] |
 |---|---:|---|---|---|
-| Plain algorithm | 1 | 8.3% [7–10] | 8.3% [7–10] | 37.6 ± 17.8 |
-| Anxiety mechanism | 1 | **95.8%** [94–97] | 95.8% [94–97] | 58.3 ± 15.9 |
-| Fuzzy rules | 1 | **100.0%** | 100.0% | 59.4 ± 14.0 |
-| Rover swarm | 3 | **97.4%** [97–98] | 92.8% [91–94] | **71.9** ± 11.5 |
+| Plain algorithm | 1 | 10.0% [8–12] | 10.0% [8–12] | 37.5 ± 18.3 |
+| Anxiety mechanism | 1 | **95.6%** [94–97] | 95.6% [94–97] | 59.9 ± 13.1 |
+| Fuzzy rules | 1 | **99.6%** [99–100] | 99.6% [99–100] | 61.2 ± 11.3 |
+| Rover swarm | 3 | **98.5%** [98–99] | 95.5% [94–97] | **70.6** ± 12.0 |
 
 **Test 2: goal navigation** (3 route points, each leg crosses hazardous terrain)
 
 | Variant | Rovers | Route completed (per rover) | Route points reached | All rovers completed | Mean steps (completed) |
 |---|---:|---|---|---|---|
-| Plain algorithm | 1 | 68.6% [66–71] | 76.6% | 68.6% [66–71] | 157.6 |
-| Anxiety mechanism | 1 | **81.1%** [79–83] | 86.6% | 81.1% [79–83] | 220.3 |
-| Fuzzy rules | 1 | **79.2%** [77–82] | 85.2% | 79.2% [77–82] | 224.6 |
-| Rover swarm | 3 | **83.3%** [82–85] | 88.1% | 65.4% [62–68] | 235.4 |
+| Plain algorithm | 1 | 66.8% [64–70] | 75.1% | 66.8% [64–70] | 156.4 |
+| Anxiety mechanism | 1 | **84.5%** [82–87] | 89.6% | 84.5% [82–87] | 211.4 |
+| Fuzzy rules | 1 | **79.3%** [77–82] | 85.1% | 79.3% [77–82] | 225.3 |
+| Rover swarm | 3 | **86.7%** [85–88] | 91.3% | 72.1% [69–75] | 235.2 |
 
-- **Exploration:** anxiety raises survival from 8.3% to 95.8% and discovered
-  terrain from 37.6% to 58.3% (both p < 0.001). The fuzzy rover loses no
-  rover in 1,000 runs and discovers 59.4%.
-- **Goal navigation:** anxiety (+12.5 points) and the fuzzy rules (+10.6
+- **Exploration:** anxiety raises survival from 10.0% to 95.6% and discovered
+  terrain from 37.5% to 59.9% (both p < 0.001). The fuzzy rover loses 4
+  rovers in 1,000 runs and discovers 61.2%.
+- **Goal navigation:** anxiety (+17.7 points) and the fuzzy rules (+12.5
   points) both complete significantly more routes than the plain rover
-  (p < 0.001), at the price of longer routes (about +65 steps).
-- **Swarm in the goal test:** per rover the swarm does best (83.3%), but
-  "all three rovers completed" (65.4%) is not better than one plain rover
-  (p = 0.07), because three rovers must all succeed.
-- **Panic is rare:** 9 of 1,000 anxious rovers in exploration (14 in the
-  goal test) end up fearing safe regolith.
+  (p < 0.001), at the price of longer routes (about +55 steps). The anxious
+  rover now completes 5 points more routes than the fuzzy one.
+- **Swarm in the goal test:** per rover the swarm does best (86.7%), and
+  "all three rovers completed" (72.1%) is now also significantly better than
+  one plain rover (66.8%, p = 0.002).
+- **Panic is rare:** 5 of 1,000 anxious rovers in exploration (7 in the goal
+  test) end up fearing safe regolith.
 - **How to read survival in exploration:** a rover that has nothing left to
   explore without crossing more than one feared cell stops and stays where
-  it is. It counts as a survivor, and the terrain it did not see is missing
-  from "terrain discovered".
+  it is (never on feared terrain). It counts as a survivor, and the terrain it
+  did not see is missing from "terrain discovered".
 
 For comparison, the papers report 42% → 73% (2017) and 33% → 77% (2025).
 
-### Compared with the previous version of the model
+### Graded fear and the retreat rule: before and after
 
-On the same held-out maps (seeds 1000–1099) the previous version gave, for
-a single rover: plain 9% survival and 20% discovered terrain, anxiety 78%
-and 33%. The change comes from four things: exploration of the nearest
-unseen terrain around the start instead of a greedy step to an unvisited
-neighbour (the rover used to drive in a line across the map), looking
-before driving onto unseen ground, a planned way out of feared terrain, and
-the limit on crossing feared terrain in exploration. Previous outputs are
-kept in `results/study_before_rework/` and `results/analysis_before_rework/`.
+The same 1,000 maps before (`results/analysis_before_risk/`, the previous
+README) and after the changes of this version (graded fear, the retreat rule,
+crossing reset, no stop on feared terrain, speed-independent terrain, the
+binomial dust storm, the risk-sensitive route cost). Paired tests,
+Holm-corrected over all 16 comparisons:
+
+| Test | Variant | Measure | Before | After | Difference | p (Holm) |
+|---|---|---|---|---|---|---|
+| Goal | Anxiety ×1 | Route completed | 81.1% | 84.5% | **+3.4** | **0.006** |
+| Goal | Anxiety ×1 | Survival | 81.4% | 85.6% | **+4.2** | **< 0.001** |
+| Goal | Swarm ×3 | Route completed (per rover) | 83.3% | 86.7% | **+3.4** | **< 0.001** |
+| Goal | Plain / fuzzy | Route completed | 68.6% / 79.2% | 66.8% / 79.3% | −1.8 / +0.1 | 0.45 / 1.0 |
+| Exploration | Anxiety ×1 | Survival | 95.8% | 95.6% | −0.2 | 1.0 |
+| Exploration | Anxiety ×1 | Terrain discovered | 58.3% | 59.9% | +1.6 | 0.88 |
+| Exploration | Swarm ×3 | Survival | 97.4% | 98.5% | **+1.0** | **0.035** |
+| Exploration | Swarm ×3 | Terrain discovered | 71.9% | 70.6% | **−1.3** | **0.005** |
+
+The gain is specific to the anxiety mechanism: the plain and fuzzy rovers,
+which share all other code, do not change in the goal test. The previous
+results were produced before commit `f31bea3` (exploration and fuzzy
+changes), so the fuzzy rover's +1.7 points of discovered terrain in
+exploration (p = 0.010) belongs to that commit. A paired check on maps 0–199
+against the code just before this version gives the same direction (anxiety in
+the goal test +4.5 points, exploration −1, swarm goal +3.2).
 
 ## Scientific model
 
 ### Terrain
 
-| Terrain | Effect on entry |
-|---|---|
-| Safe regolith | Small battery use. Solar charging possible. |
-| Loose sand | High battery use, slip, wheel wear 0.5; 12% chance to get stuck (see above). |
-| Ventifacts | Wheels −6 (exponential), hull −1; invisible to LIDAR. |
-| Steep slope (30–42°) | High battery use; overturn likely (hull −40, wheels −25, then 3 steps to get up); otherwise wheels −2. |
-| Deep shadow | Battery −4 growing with exposure; after 3 steps hull −1.5 per step (cold). |
-| Dust storm | Battery −1.2, wheels −0.8, hull −0.6, camera range reduced. |
-| Boulders | Not traversable (seen by LIDAR). |
+Mean effect of one entry (Monte Carlo of `apply_effect`, 20,000 draws):
 
-A rover is lost when battery, hull or wheels reach 0 (also while digging out of
-sand).
+| Terrain | Battery | Wheels | Hull | Other |
+|---|---|---|---|---|
+| Safe regolith | −0.3 | 0 | 0 | Solar charging possible. |
+| Loose sand | −3.3 (log-normal, grows with slip) | −0.5 | 0 | Slip `Beta(3, 5)` (speed ×0.55 on average); 12% chance to get stuck (3–12 steps, −2.5 battery and −1 wheels per step). |
+| Ventifacts | −0.8 | −6 (exponential, long tail) | −1 | Seen by the cameras only (LIDAR sees only boulders). |
+| Steep slope (30–42°) | −5 to −9 | −2, or −25 on overturn | −40 on overturn | Overturn probability `1/(1+e^(−0.25·(slope−26)))`: 78% at 31°, 98% at 42°; then 3 steps to get up. |
+| Deep shadow | −4.75, +0.75 per further step in the shadow | 0 | −1.5 per step from the 3rd step (cold) | |
+| Dust storm | −1.2 | −0.8 | −0.6 | Camera range `Binomial(3, p)`, `p = 0.85 − 0.15·exposure` (min 0.05): 2.1 cells on the 1st step, 0.75 on the 4th; never more than in clear air. LIDAR unaffected. |
+| Boulders | – | – | – | Not traversable (seen by LIDAR). |
+
+The effects do not depend on the rover's speed (it always enters a cell at
+its base speed, so a speed term only hid a constant). A rover is lost when
+battery, hull or wheels reach 0 (also while digging out of sand).
 
 ### Homeostat
 
@@ -315,6 +339,41 @@ sand, a deepening shadow) is learned too. The slope term is left out because
 it is a warning, not a loss: with it the rover learned to fear plain regolith
 on a gentle slope.
 
+The sums never shrink, so every terrain that costs more than `chronic_rest`
+per step is eventually feared (a dust storm after 9 entries, however far
+apart). A leaky version is available (`chronic_retention < 1`: every step all
+sums are multiplied by it), but it is **off by default**: on maps 0–199 with
+`chronic_retention = 0.9` the anxious rover survived exploration 4–5 points
+less often (it learned sand and shadow later) and the goal test gained
+nothing significant. The "oversensitive" accumulation protects the rover.
+
+**Graded fear.** The imprint intensity follows the size of the danger
+instead of always being 1.0:
+
+```text
+acute or slip alarm:  I = clamp(S_inst / fear_full_stress, acute_min_intensity, 1)   (80, 0.5)
+chronic alarm:        I = chronic_intensity = 0.35
+```
+
+Repeated imprints of the same terrain add up (up to 1), so a fear grows with
+experience. A terrain can be imprinted again once its fear is below
+`reimprint_below = 0.8`. When each terrain is learned and how strongly
+(fresh rover driving over one terrain, 3,000 runs; the timing is the same
+when the terrain is met only every 4th step):
+
+| Terrain | First imprint | Intensity (graded) | Before (all-or-nothing) |
+|---|---|---|---|
+| Steep slope 31° | 1st entry | 0.95 | 1.0 |
+| Ventifacts | 1st entry | 0.8 | 1.0 |
+| Loose sand | 3rd entry | 0.4 | 1.0 |
+| Deep shadow | 3rd step | 0.35–0.38 | 1.0 |
+| Dust storm | 9th entry | 0.35 | 1.0 |
+
+The rover learns the same terrains at the same moments as before, but the
+strength of each fear now follows the real danger (slope > rocks > sand ≈
+shadow ≈ dust), and repeated lessons make a fear stronger.
+`graded_fear = False` restores the all-or-nothing imprint.
+
 The original formula from the project specification is available as
 `HomeostatConfig.specification()`:
 
@@ -334,12 +393,21 @@ damaging terrain never crossed the threshold.
 ```text
 I_effective = I · exp(−λ · age)              λ = fear_decay = 0.005 per step
 fear_cost   = w_fear · I_effective           w_fear = fear_weight = 30
-I_context   = 0.5 · exp(−exposures / 3)      skipped below 0.15
+I_context   = 0.5 · I · exp(−exposures / 3)  skipped below 0.15 (I = intensity of the main imprint)
 ```
 
-- On a cell with fear ≥ 0.5 the rover retreats to a known, less feared
-  neighbour (not while crossing on purpose). When every neighbour is feared
-  as much (deep inside a shadow), it takes the cheapest known way out.
+- On a cell with fear ≥ 0.5 the rover retreats to a known neighbour feared
+  less than that (below 0.5), not while crossing on purpose. A neighbour that
+  is itself strongly feared is no refuge: before this rule a rover that had
+  overturned on a slope retreated into sand, got stuck, and "retreated" back
+  onto the slope, which it now feared slightly less. When no neighbour
+  qualifies (deep inside a shadow), it takes the cheapest known way out.
+- A new fear (own imprint or one received by radio) ends a crossing on
+  purpose: the crossing was decided with weaker fear. With graded fear a weak
+  chronic fear (0.35) does not trigger a retreat, so the rover may drive on
+  into the area and get a stronger shock; that shock turns it back.
+- An exploring rover never stops on feared terrain: when nothing is left to
+  explore it first leaves for ground it does not fear.
 - Goal navigation replans an A* route every step over the terrain the rover
   has seen (unknown cells cost 1); emotional variants add `fear_cost`.
 - Swarm: an imprint is broadcast within `R_radio = 20` cells; receivers store
@@ -355,6 +423,36 @@ I_context   = 0.5 · exp(−exposures / 3)      skipped below 0.15
   to where it last heard the others. When the swarm is stretched to the edge
   of radio range, the rover with the lowest id in contact leads: it waits and
   the others drive towards it, so rovers never bounce back and forth there.
+
+### Route cost (all variants)
+
+The cost of driving onto a terrain is a distribution, not a number:
+`terrain_costs` is its mean and `terrain_cost_std` its spread. The spread is
+the mean times the coefficient of variation of the battery drain of one entry
+(Monte Carlo of the terrain effects):
+
+| | Safe | Sand | Ventifacts | Slope | Shadow | Dust |
+|---|---|---|---|---|---|---|
+| mean | 1.0 | 2.0 | 1.8 | 2.5 | 2.0 | 1.8 |
+| std | 0.17 | 0.71 | 0.22 | 0.43 | 0.32 | 0.45 |
+
+The planners (A*, exploration, the way to a charging spot, the way out of
+feared terrain) do not draw random costs, which would only make the route
+jump between replans. They use a risk-sensitive value:
+
+```text
+cost = (mean + λ·std) / (1 + λ·std_SafeRegolith)
+λ    = risk_aversion (0.5, all variants)
+     + stress_risk_aversion · min(1, S / S_crit)   (1.5, anxious variants only)
+```
+
+The divisor keeps safe regolith at exactly 1, the unit in which all other
+route constants are calibrated. The distribution covers **energy only**:
+damage, overturns and getting stuck are what the anxious rover has to learn,
+so they are not given to any variant in advance (otherwise the plain rover
+would know the dangers too). On the test maps this cost has no measurable
+effect on survival or exploration (ablation below); energy varies too little
+between entries of one terrain for the risk premium to change routes.
 
 ### Exploration (all variants)
 
@@ -445,7 +543,7 @@ All parameters live in `config/config.py` (`SimulationConfig`,
 | `config/config.py` | All parameters, validation, JSON round-trip, config hash. |
 | `src/environment/` | `terrain.py` (terrain classes and effects), `generator.py` (seeded Perlin map). |
 | `src/agents/` | `rover.py` (Pioneer 3-DX: sensors, short-term memory, imprinting, recovery, sand, charging), `homeostat.py`, `fear.py`, specification notes `instruction.md`, `rover_moving_instruction.md`. |
-| `src/navigation/` | `strategies.py` (`online`, `emotional`, `fuzzy`, `swarm_emotional`), `exploration.py` (nearest unseen terrain), `fuzzy.py` (fuzzy rules), `planning.py` (A*), `energy.py` (drive to charge), `observation.py`, `board.py`, `registry.py`, `types.py`, `scaffold.py` (non-scientific walker). |
+| `src/navigation/` | `strategies.py` (`online`, `emotional`, `fuzzy`, `swarm_emotional`), `exploration.py` (nearest unseen terrain), `fuzzy.py` (fuzzy rules), `planning.py` (A*), `costs.py` (risk-sensitive route cost), `energy.py` (drive to charge), `observation.py`, `board.py`, `registry.py`, `types.py`, `scaffold.py` (non-scientific walker). |
 | `src/communication/` | `radio.py` (packets), `swarm.py` (broadcast and delivery). |
 | `src/model/` | `model.py` (Mesa `HexMultiGrid` model, spawning, multi-leg goals, termination), `types.py` (hex geometry). |
 | `src/simulation/session.py` | JSON snapshots for the viewer and headless runs. |
@@ -453,7 +551,7 @@ All parameters live in `config/config.py` (`SimulationConfig`,
 | `root/` | `analyze.py` (main experiment), `study.py` (held-out study), `run.py` (`simulate`), `batch_run.py` (`batch-run`). |
 | `server/` | `server.py`, `simulation_runtime.py`, `terrain_data.py`, `index.html`, `styles.css`, `js/` (Three.js scene, terrain, rover models, panels), `textures/`, `models/`. |
 | `show_map.py` | Terrain preview (`show_map`). |
-| `tests/` | 78 tests in 17 files, including `test_paper_mechanisms.py`, `test_swarm_exploration.py`, `test_navigation_loops.py` and `test_exploration_fuzzy.py`. |
+| `tests/` | 90 tests in 18 files, including `test_paper_mechanisms.py`, `test_swarm_exploration.py`, `test_navigation_loops.py`, `test_exploration_fuzzy.py` and `test_risk_and_graded_fear.py`. |
 
 Rover statuses shown in the viewer: `active`, `charging`, `recovering`,
 `digging_out`, `overturned`, `destroyed`, `goal_reached`.
