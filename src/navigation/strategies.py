@@ -1,6 +1,7 @@
 """Scientific navigation strategies.
 
-All variants share the same control: A* to the goal over known terrain and
+All variants share the same control: LRTA* to the goal (fear or caution
+added to the cost of entering a cell) and
 exploration of the nearest unseen terrain (``src/navigation/exploration.py``).
 They differ only in how they value a cell:
 
@@ -21,7 +22,7 @@ import math
 from collections.abc import Callable, Mapping
 
 from config.config import SimulationConfig
-from src.model.types import Position, hex_distance
+from src.model.types import Position, hex_distance, squeezed
 from src.navigation.board import HexGridBoard
 from src.navigation.costs import TerrainCost, mean_cost, risk_cost, stress_aversion
 from src.navigation.energy import seek_charging_spot
@@ -33,7 +34,7 @@ from src.navigation.exploration import (
     frontier_targets,
 )
 from src.navigation.fuzzy import FuzzyInputs, caution, retreat_degree
-from src.navigation.planning import plan_first_step
+from src.navigation.planning import UNKNOWN_CELL_COST, plan_first_step
 from src.navigation.types import NavigationDecision, Observation
 
 # Extra cost per cell a swarm target lies beyond ``swarm_cohesion_radius``
@@ -65,8 +66,10 @@ def _retreat_decision(
 ) -> NavigationDecision | None:
     """Step back to a neighbour the rover fears (distrusts) less.
 
-    The cost is read from terrain the rover has seen (also cells behind it);
-    a neighbour it has never seen is not a safe place to retreat to. Only a
+    The rover retreats only in a known direction: onto a cell it has driven
+    on itself (``rover.visited``). A cell it has only seen from a distance
+    may hide a danger the camera does not show (e.g. ventifacts or a slope
+    under the same colour), so it is not a safe place to flee to. Only a
     neighbour below ``safe_level`` (the retreat threshold) counts: stepping
     from one strongly feared terrain onto another is not a retreat (e.g. from
     a slope back into the sand it just dug out of, and back again).
@@ -79,10 +82,12 @@ def _retreat_decision(
         return cell_cost(cell) if cell is not None else 0.0
 
     current = cost_at(rover.pos)
+    driven = rover.visited
     safer = [
         action
         for action in actions
-        if action in rover.known_terrain
+        if action in driven
+        and action in rover.known_terrain
         and cost_at(action) < min(current, safe_level)
     ]
     if not safer:
@@ -112,11 +117,15 @@ def _escape_decision(
     """First step of the cheapest way out of feared (distrusted) terrain.
 
     Used when no neighbour is better than the current cell (e.g. deep
-    inside a shadow area): the rover plans a route through known terrain to
-    the nearest cell whose extra cost is below ``level``.
+    inside a shadow area): the rover plans a route back over cells it has
+    driven on (``rover.visited``) to the nearest such cell whose extra cost
+    is below ``level``. It escapes only in a known direction, never into
+    terrain it has only seen. ``None`` when no such way exists.
     """
 
     known = rover.known_terrain
+    driven = rover.visited
+    blocked = board.known_blocker(observation, known)
     start = observation.position
     first_actions = board.actions(start, observation)
     distance: dict[Position, float] = {start: 0.0}
@@ -135,8 +144,10 @@ def _escape_decision(
             info = known.get(neighbour)
             if (
                 info is None
+                or neighbour not in driven
                 or not info.traversable
                 or neighbour in observation.lidar_obstacles
+                or squeezed(position, neighbour, blocked)
             ):
                 continue
             new_cost = cost_so_far + terrain_cost(info) + cell_cost(info)
@@ -278,6 +289,132 @@ class _StrategyBase:
             return board, actions, charge
         return board, actions, None
 
+    def _lrta_step(
+        self,
+        rover,
+        observation: Observation,
+        board: HexGridBoard,
+        actions: list[Position],
+        cell_cost: CellCost | None = None,
+    ) -> tuple[Position, float]:
+        """One step of LRTA* towards ``observation.target``.
+
+        LSS-LRTA* (Koenig & Sun 2009), the LRTA* of Korf (1990) with a local
+        search space. ``h`` starts as the hex distance to the target
+        (admissible: no cell costs less than 1) and is learned in
+        ``self.h_cost``. Every step the rover:
+
+        1. expands up to ``lrta_lookahead`` cells around itself with A*
+           (g = cost from the rover, f = g + h);
+        2. learns: ``h`` of every expanded cell is raised to the cheapest
+           cost of leaving it through the search frontier (Dijkstra), so a
+           dead end or a wall is learned for the whole area at once;
+        3. takes the first move towards the frontier cell with the lowest f.
+
+        With ``lrta_lookahead = 1`` this is exactly the classic LRTA*: h of
+        the current cell becomes min(cost + h) over its neighbours and the
+        rover moves to the best one.
+
+        The cost of entering a known cell is its (risk-sensitive) terrain
+        cost plus ``cell_cost`` (learned fear of the anxious rover, caution
+        of the fuzzy rover), so cells that stress the rover are avoided
+        while a way around exists. An unknown cell costs 1 (free-space
+        assumption); known obstacles are never entered. Returns
+        ``(chosen move, its cell_cost)``.
+        """
+
+        target = observation.target
+        assert target is not None
+        known = rover.known_terrain
+        obstacles = observation.lidar_obstacles
+        blocked = board.known_blocker(observation, known)
+        self.h_cost[target] = 0.0
+
+        def h(position: Position) -> float:
+            value = self.h_cost.get(position)
+            if value is None:
+                value = float(board.hex_distance(position, target))
+            return value
+
+        def extra_of(cell: Position) -> float:
+            info = known.get(cell)
+            return cell_cost(info) if (cell_cost and info is not None) else 0.0
+
+        def enter_cost(cell: Position) -> float:
+            info = known.get(cell)
+            if info is None:
+                return UNKNOWN_CELL_COST
+            return self._terrain_cost(info) + extra_of(cell)
+
+        def successors(cell: Position) -> list[Position]:
+            if cell == start:
+                return actions
+            result = []
+            for neighbour in board.neighbors(cell):
+                if neighbour in obstacles:
+                    continue
+                info = known.get(neighbour)
+                if info is not None and not info.traversable:
+                    continue
+                if squeezed(cell, neighbour, blocked):
+                    continue
+                result.append(neighbour)
+            return result
+
+        # 1. A* lookahead from the rover's cell.
+        start = observation.position
+        limit = max(1, int(self.config.lrta_lookahead))
+        g: dict[Position, float] = {start: 0.0}
+        first: dict[Position, Position] = {}
+        closed: set[Position] = set()
+        heap: list[tuple[float, float, Position]] = [(h(start), 0.0, start)]
+        while heap and len(closed) < limit:
+            _, cost, cell = heapq.heappop(heap)
+            if cell in closed or cost > g.get(cell, math.inf):
+                continue
+            if cell == target and cell != start:
+                heapq.heappush(heap, (cost + h(cell), cost, cell))
+                break
+            closed.add(cell)
+            for neighbour in successors(cell):
+                if neighbour in closed:
+                    continue
+                new_cost = cost + enter_cost(neighbour)
+                if new_cost < g.get(neighbour, math.inf):
+                    g[neighbour] = new_cost
+                    first[neighbour] = neighbour if cell == start else first[cell]
+                    heapq.heappush(heap, (new_cost + h(neighbour), new_cost, neighbour))
+        frontier = {cell for cell in g if cell not in closed}
+        if not frontier:
+            # Boxed in: the cheapest neighbour, as plain LRTA* would.
+            chosen = min(actions, key=lambda a: (enter_cost(a) + h(a), a))
+            self.h_cost[start] = max(h(start), enter_cost(chosen) + h(chosen))
+            return chosen, extra_of(chosen)
+
+        # 2. Learning: Dijkstra from the frontier back into the closed cells.
+        learned = {cell: math.inf for cell in closed}
+        queue = [(h(cell), cell) for cell in frontier]
+        heapq.heapify(queue)
+        while queue:
+            value, cell = heapq.heappop(queue)
+            if cell in learned and value > learned[cell]:
+                continue
+            for neighbour in board.neighbors(cell):
+                if neighbour not in learned or cell not in successors(neighbour):
+                    continue
+                candidate = enter_cost(cell) + value
+                if candidate < learned[neighbour]:
+                    learned[neighbour] = candidate
+                    heapq.heappush(queue, (candidate, neighbour))
+        for cell, value in learned.items():
+            if math.isfinite(value):
+                self.h_cost[cell] = max(h(cell), value)
+
+        # 3. Move towards the frontier cell with the lowest f = g + h.
+        best = min(frontier, key=lambda cell: (g[cell] + h(cell), h(cell), cell))
+        chosen = first[best]
+        return chosen, extra_of(chosen)
+
     def _step_to(self, item: ExploreTarget, reason: str) -> NavigationDecision:
         """Decision for the first step towards an exploration target."""
 
@@ -343,7 +480,7 @@ EXPLORED = NavigationDecision(None, "nothing left to explore", "exploration_comp
 
 
 class OnlineSearchStrategy(_StrategyBase):
-    """Plain rover: A* to the goal, exploration of the nearest unseen terrain."""
+    """Plain rover: LRTA* to the goal, exploration of the nearest unseen terrain."""
 
     GOAL_REASON = "online goal search"
     EXPLORE_REASON = "online exploration"
@@ -355,41 +492,9 @@ class OnlineSearchStrategy(_StrategyBase):
         if decision is not None:
             return decision
 
-        # Goal navigation: A* over known terrain, replanned every step.
+        # Goal navigation: LRTA* (terrain cost only).
         if observation.mission_mode == "goal_navigation":
-            target = observation.target
-            assert target is not None
-            planned = plan_first_step(
-                rover, observation, board, target, terrain_cost=self._terrain_cost
-            )
-            if planned is not None:
-                self._moves += 1
-                return NavigationDecision(planned[0], self.GOAL_REASON, "moving")
-
-            # No route through known terrain: greedy LRTA* step.
-            for action in actions:
-                if action not in self.h_cost:
-                    self.h_cost[action] = float(board.hex_distance(action, target))
-            self.h_cost[target] = 0.0
-
-            def goal_key(action: Position):
-                terrain = observation.visible_cells.get(action)
-                cost = (
-                    self._terrain_cost(terrain)
-                    if terrain
-                    else board.movement_cost(action)
-                )
-                visited_penalty = 1.5 if action in observation.visited else 0.0
-                return (cost + self.h_cost[action] + visited_penalty, action)
-
-            chosen = min(actions, key=goal_key)
-            position = observation.position
-            self.h_cost[position] = max(
-                self.h_cost.get(
-                    position, float(board.hex_distance(position, target))
-                ),
-                goal_key(chosen)[0],
-            )
+            chosen, _ = self._lrta_step(rover, observation, board, actions)
             self._moves += 1
             return NavigationDecision(chosen, self.GOAL_REASON, "moving")
 
@@ -441,48 +546,16 @@ class _AverseStrategy(_StrategyBase):
         actions: list[Position],
         cell_cost: CellCost,
     ) -> NavigationDecision:
-        """Goal step where the extra cost means a detour, not a hard ban.
+        """LRTA* goal step where the extra cost means a detour, not a ban.
 
-        The rover prefers a detour around feared terrain. When the detour is
-        more expensive than crossing, it crosses on purpose and does not
-        retreat (``_crossing``). Without a route through known terrain a
-        greedy LRTA* step raises the estimate of the current cell, so a rover
-        stuck in front of a feared area finds the way instead of circling.
+        Fear (or fuzzy caution) is added to the cost of entering a cell, so
+        the rover goes around terrain that stressed it. Only when the learned
+        ``h`` makes the way around more expensive than crossing does it
+        cross on purpose, and then it does not retreat halfway
+        (``_crossing``).
         """
 
-        target = observation.target
-        assert target is not None
-        planned = plan_first_step(
-            rover, observation, board, target, cell_cost, self._terrain_cost
-        )
-        if planned is not None:
-            chosen, extra = planned
-        else:
-            self.h_cost[target] = 0.0
-            known = rover.known_terrain
-
-            def extra_of(action: Position) -> float:
-                info = known.get(action)
-                return cell_cost(info) if info is not None else 0.0
-
-            def h(position: Position) -> float:
-                return self.h_cost.get(
-                    position, float(board.hex_distance(position, target))
-                )
-
-            def total(action: Position) -> float:
-                terrain = observation.visible_cells.get(action)
-                cost = (
-                    self._terrain_cost(terrain)
-                    if terrain
-                    else board.movement_cost(action)
-                )
-                return cost + extra_of(action) + h(action)
-
-            chosen = min(actions, key=lambda action: (total(action), action))
-            position = observation.position
-            self.h_cost[position] = max(h(position), total(chosen))
-            extra = extra_of(chosen)
+        chosen, extra = self._lrta_step(rover, observation, board, actions, cell_cost)
         self._crossing = extra > 0.0
         if self._crossing:
             self._forced_visits += 1

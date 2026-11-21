@@ -1,7 +1,7 @@
 [project]
 name = "anxiety-mechanism-at-autonomous-robot"
 version = "0.1.0"
-description = "Anxiety mechanism simulation for autonomous Mars rovers (Mesa + Perlin Noise)"
+description = "Anxiety mechanism simulation for autonomous Mars rovers on real maps (Mesa)"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -9,7 +9,6 @@ dependencies = [
     "numpy>=1.24.0",
     "pandas>=2.0.0",
     "matplotlib>=3.7.0",
-    "perlin-noise",
     "networkx>=3.1",
     "scipy>=1.10.0",
 ]
@@ -33,6 +32,12 @@ analyze = "root.analyze:main"
 study = "root.study:main"
 # `uv run show_map` -> terrain-only Matplotlib preview
 show_map = "show_map:visualize_map"
+# `uv run validate` -> validation of the real maps, traction and terrain model
+validate = "root.validate:main"
+# `uv run tune` -> grid search of the anxiety parameters on calibration seeds
+tune = "root.tune:main"
+# `uv run build-real-maps` -> rebuild real_maps/*.npz from the GeoPackages
+build-real-maps = "src.environment.real_maps:build_main"
 
 [build-system]
 requires = ["hatchling"]

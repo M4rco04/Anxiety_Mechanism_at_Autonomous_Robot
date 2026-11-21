@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from src.environment.terrain import TerrainPatch
-from src.model.types import Position, hex_distance
+from src.model.types import Position, hex_distance, squeezed
 from src.navigation.types import Observation
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -50,11 +51,31 @@ class HexGridBoard:
             return math.inf
         return terrain.movement_cost
 
+    @staticmethod
+    def known_blocker(observation: Observation, known: Mapping | None = None):
+        """``blocked(position)`` from what the rover knows: obstacles seen by
+        LIDAR and known non-traversable cells (boulders)."""
+
+        cells = observation.visible_cells if known is None else known
+        obstacles = observation.lidar_obstacles
+
+        def blocked(position: Position) -> bool:
+            if position in obstacles:
+                return True
+            info = cells.get(position)
+            return info is not None and not info.traversable
+
+        return blocked
+
     def actions(self, position: Position, observation: Observation) -> list[Position]:
         candidates = self.neighbors(position)
+        blocked = self.known_blocker(observation)
         result: list[Position] = []
         for candidate in candidates:
             if candidate in observation.lidar_obstacles:
+                continue
+            # No squeezing between two boulders.
+            if squeezed(position, candidate, blocked):
                 continue
             known = observation.visible_cells.get(candidate)
             if known is not None and not known.traversable:

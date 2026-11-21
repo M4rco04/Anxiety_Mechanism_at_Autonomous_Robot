@@ -49,8 +49,9 @@ Najważniejsze elementy, z którymi trzeba się zintegrować:
   rozmieszcza pola terenu i uruchamia agentów przez scheduler Mesa.
 * `TerrainPatch` i klasy pochodne w `src/environment/terrain.py` reprezentują
   pola terenu oraz ich efekty fizyczne.
-* `MarsMapGenerator` w `src/environment/generator.py` generuje spójną
-  przestrzennie mapę na podstawie szumu Perlina.
+* `RealMapGenerator` w `src/environment/real_maps.py` wycina fragment
+  prawdziwej mapy (krater Jezero na Marsie lub pustynia Atakama); seed
+  wybiera fragment mapy.
 
 Docelowo należy zachować wywoływanie `TerrainPatch.apply_effect(rover)` po
 ruchu. Nawigacja nie może sama odejmować baterii ani uszkadzać podzespołów,

@@ -1,4 +1,5 @@
-"""Pioneer 3-DX rover agent.
+"""Pioneer rover agent (class name kept from the 3-DX of the 2017 paper;
+the drive and traction follow the skid-steered P3-AT of Wang et al. 2015).
 
 The rover owns its physical state, sensors, homeostat, fear memory and radio
 behaviour.  It delegates route selection to an external navigation strategy
@@ -22,6 +23,7 @@ from src.agents.fear import (
 from src.agents.homeostat import Homeostat, HomeostatReading
 from src.communication.radio import RadioPacket
 from src.environment.terrain import Boulders, TerrainPatch, TerrainType
+from src.environment.traction import turn_energy_factor
 from src.model.types import (
     RGB,
     Position,
@@ -29,6 +31,7 @@ from src.model.types import (
     hex_distance,
     hex_vector,
     rgb_distance,
+    squeezed,
 )
 from src.navigation.observation import build_observation
 from src.navigation.types import NavigationDecision, NavigationStrategy
@@ -68,6 +71,10 @@ class Pioneer3DXAgent(mesa.Agent):
         self.base_speed = 1.0
         self.target_speed = 1.0
         self.current_speed = 1.0
+        # Slip ratio of the last cell from the traction model, and battery
+        # spent on skid-steer turns.
+        self.last_slip = 0.0
+        self.turn_energy = 0.0
         self.wheel_condition = 100.0
         self.hull_condition = 100.0
         self.stress_level = 0.0
@@ -104,6 +111,7 @@ class Pioneer3DXAgent(mesa.Agent):
         self.context_imprints = 0
         self.charging = False
         self.charging_steps = 0
+        self.dust_shaded_charging_steps = 0
         self.energy_charged = 0.0
         self.is_destroyed = False
 
@@ -608,12 +616,19 @@ class Pioneer3DXAgent(mesa.Agent):
         if self.is_overturned and not self._overturn_counted:
             self._overturn_counted = True
             self.overturns += 1
-            self.recovery_steps_left = int(
-                self.model.config.overturn_recovery_steps
+            config = self.model.config
+            recovers = float(self.model.rng.random()) < float(
+                config.overturn_recovery_probability
+            )
+            self.recovery_steps_left = (
+                int(config.overturn_recovery_steps) if recovers else 0
             )
             self.model.record_event(
                 "overturned", rover_id=self.unique_id, position=self.pos
             )
+            if self.recovery_steps_left <= 0:
+                self.mission_status = "overturned"
+                self.status_reason = "overturned - rover broken"
 
         signature = self.look_at(next_position)
         if self.fear_intensity(signature) > 0.0:
@@ -631,6 +646,9 @@ class Pioneer3DXAgent(mesa.Agent):
         terrain = self.model.terrain_at(position)
         if terrain is None or not terrain.traversable:
             return False
+        # The gap between two boulders is narrower than the rover.
+        if self.pos is not None and squeezed(self.pos, position, self.model.is_boulder):
+            return False
         return not (
             self.model.rover_at(position, exclude_id=self.unique_id) is not None
             and not self.model.config.allow_rover_overlap
@@ -641,10 +659,34 @@ class Pioneer3DXAgent(mesa.Agent):
         return (new[0] - old[0], new[1] - old[1])
 
     def _face(self, old: Position, new: Position) -> None:
-        """Point the cameras from ``old`` towards ``new``."""
+        """Point the rover (and its cameras) from ``old`` towards ``new``.
 
+        The P3-AT is skid-steered: turning makes its wheels skid sideways,
+        which costs friction work (Wang et al. 2015, ICR coefficient 1.47
+        when turning in place). The turn is charged in battery.
+        """
+
+        new_cube = hex_vector(old, new)
+        self._charge_turn(self.heading_cube, new_cube)
         self.heading = self._direction_from_step(old, new)
-        self.heading_cube = hex_vector(old, new)
+        self.heading_cube = new_cube
+
+    def _charge_turn(
+        self, old_cube: tuple[int, int, int], new_cube: tuple[int, int, int]
+    ) -> None:
+        config = self.model.config
+        if not getattr(config, "traction_model", False) or old_cube == new_cube:
+            return
+        a = self._hex_to_pixel(old_cube)
+        b = self._hex_to_pixel(new_cube)
+        if a == (0.0, 0.0) or b == (0.0, 0.0):
+            return
+        angle = abs(math.atan2(a[0] * b[1] - a[1] * b[0], a[0] * b[0] + a[1] * b[1]))
+        cost = float(config.flat_drain) * turn_energy_factor(
+            angle, float(getattr(self.model, "cell_m", config.resolved_cell_m))
+        )
+        self.battery = clamp(self.battery - cost, 0.0, 100.0)
+        self.turn_energy += cost
 
     def is_facing(self, position: Position) -> bool:
         return hex_vector(self.pos, position) == self.heading_cube
@@ -796,13 +838,19 @@ class Pioneer3DXAgent(mesa.Agent):
         self.previous_position = self.pos
         self.target_speed = 0.0
         self.current_speed = 0.0
-        self.battery = min(
-            float(config.solar_charge_stop),
-            self.battery + float(config.solar_charge_rate),
-        )
+        shaded = self.model.dust_shaded(self.pos)
+        rate = float(config.solar_charge_rate)
+        if shaded:
+            rate *= float(config.dust_solar_fraction)
+            self.dust_shaded_charging_steps += 1
+        self.battery = min(float(config.solar_charge_stop), self.battery + rate)
         self.energy_charged += self.battery - self.battery_prev
         self.charging_steps += 1
-        self.last_action_reason = "charging from solar panels"
+        self.last_action_reason = (
+            "charging from solar panels (dust storm nearby)"
+            if shaded
+            else "charging from solar panels"
+        )
 
         reading = self.update_homeostat(
             delta_battery=0.0,

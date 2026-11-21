@@ -13,7 +13,7 @@ import heapq
 import math
 from collections.abc import Callable
 
-from src.model.types import Position
+from src.model.types import Position, squeezed
 from src.navigation.board import HexGridBoard
 from src.navigation.costs import TerrainCost, mean_cost
 from src.navigation.types import Observation, TerrainObservation
@@ -37,6 +37,7 @@ def plan_first_step(
 
     start = observation.position
     first_actions = board.actions(start, observation)
+    blocked = board.known_blocker(observation, rover.known_terrain)
     if not first_actions:
         return None
     known = rover.known_terrain
@@ -73,6 +74,8 @@ def plan_first_step(
         neighbours = first_actions if position == start else board.neighbors(position)
         for neighbour in neighbours:
             if neighbour in observation.lidar_obstacles:
+                continue
+            if squeezed(position, neighbour, blocked):
                 continue
             cost = step_cost(neighbour)
             if math.isinf(cost):

@@ -2,7 +2,9 @@
 
 All experiments use **held-out maps** (seeds from ``--base-seed``, default
 1000) that were not used while the model parameters were calibrated
-(seeds 0-39), and the frozen default parameters from ``config/config.py``.
+(``uv run tune`` uses seeds 0-99), and the frozen default parameters from
+``config/config.py``. ``--map`` picks the terrain (Jezero crater on Mars by
+default, or the Atacama Desert).
 
 Parts:
   swarm        - which part of the swarm helps: more rovers, a shared map,
@@ -27,8 +29,8 @@ from typing import Any
 
 import pandas as pd
 
-from config.config import HomeostatConfig, SimulationConfig
-from root.analyze import TESTS, _run_one
+from config.config import MAP_SOURCES, HomeostatConfig, SimulationConfig
+from root.analyze import TESTS, _map_text, _run_one
 from src.analytics.benchmark import rate_interval
 
 PLAIN, ANXIETY = "Plain", "Anxiety"
@@ -62,9 +64,10 @@ ABLATIONS: list[tuple[str, dict[str, Any]]] = [
 
 SENSITIVITY: dict[str, tuple[str, list[float], float]] = {
     # parameter: (label, values, default)
-    "s_crit": ("Stress threshold S_crit", [25, 30, 40, 50, 60, 75], 40),
+    "s_crit": ("Stress threshold S_crit", [30, 40, 50, 55, 65, 75], 55),
     "fear_weight": ("Fear weight (cost per feared cell)", [5, 10, 20, 30, 60, 100], 30),
     "fear_decay": ("Fear decay per step", [0.0, 0.0025, 0.005, 0.01, 0.02, 0.05], 0.005),
+    "alpha_safe": ("Safe slope alpha_safe [deg] (traction limit 19.7)", [14, 16, 18, 20, 22, 25], 20),
 }
 
 NOISE_LEVELS = [0.0, 2.5, 5.0, 10.0, 15.0, 20.0, 30.0]
@@ -74,8 +77,9 @@ NOISE_VARIANTS = [("Plain ×1", "online", 1), ("Anxiety ×1", "emotional", 1), (
 def _apply(config: SimulationConfig, overrides: dict[str, Any]) -> SimulationConfig:
     homeostat = overrides.get("homeostat")
     rest = {k: v for k, v in overrides.items() if k != "homeostat"}
-    if "s_crit" in rest:
-        homeostat = replace(homeostat or config.homeostat, s_crit=rest.pop("s_crit"))
+    for name in ("s_crit", "alpha_safe"):
+        if name in rest:
+            homeostat = replace(homeostat or config.homeostat, **{name: rest.pop(name)})
     config = replace(config, **rest)
     if homeostat is not None:
         config = replace(config, homeostat=homeostat)
@@ -276,7 +280,8 @@ def write_report(out: Path, args: argparse.Namespace, results: dict[str, Any], s
     text = [
         "# Publication study",
         "",
-        (f"Held-out maps: seeds {args.base_seed}–{args.base_seed + args.runs - 1} (calibration used seeds 0–39 and 5000–5159). "
+        (f"Terrain: {_map_text(args)}. "
+        f"Held-out maps: seeds {args.base_seed}–{args.base_seed + args.runs - 1} (the parameters were tuned on seeds 0–99, `uv run tune`). "
         f"Frozen default parameters. {args.runs} simulations per condition and test; sensitivity uses "
         f"the first {args.sens_runs} seeds. Brackets: 95% interval (Wilson; bootstrap over simulations for several rovers). Paired tests by seed, "
         "Holm-corrected within each table. Survival and route completion are per rover."),
@@ -360,6 +365,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--parts", nargs="+", default=["swarm", "ablation", "sensitivity", "noise"],
                         choices=["swarm", "ablation", "sensitivity", "noise"])
     parser.add_argument("--max-steps", type=int, default=500)
+    parser.add_argument("--map", dest="map_source", default=SimulationConfig().map_source,
+                        choices=MAP_SOURCES,
+                        help="Terrain: mars (Jezero crater) or atacama (Atacama Desert). "
+                        "The seed picks the part of the map.")
+    parser.add_argument("--cell-m", type=float, default=None,
+                        help="Size of one hex cell in metres (default: 50 mars, 20 atacama).")
     parser.add_argument("--output", type=Path, default=Path("results") / "study")
     parser.add_argument("--report-only", action="store_true",
                         help="Rebuild tables, figures and the report from the saved episodes.csv (no simulations).")
@@ -377,7 +388,12 @@ def main(argv: list[str] | None = None) -> int:
         frame = pd.read_csv(out / "episodes.csv")
         seconds = None
     else:
-        base = SimulationConfig(max_steps=args.max_steps, exploration_budget=args.max_steps)
+        base = SimulationConfig(
+            max_steps=args.max_steps,
+            exploration_budget=args.max_steps,
+            map_source=args.map_source,
+            cell_m=args.cell_m,
+        )
         tasks = build_tasks(args, base)
         print(f"Running {len(tasks)} simulations on held-out seeds {args.base_seed}+ ...")
         start = time.perf_counter()

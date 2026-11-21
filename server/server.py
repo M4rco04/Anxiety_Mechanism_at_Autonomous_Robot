@@ -161,6 +161,8 @@ class WebServer:
         mission_mode: str = "exploration",
         max_steps: int = 500,
         solar_charging: bool = True,
+        map_source: str | None = None,
+        cell_m: float | None = None,
     ) -> None:
         if width <= 0 or height <= 0:
             raise ValueError("Terrain dimensions must be positive")
@@ -177,6 +179,8 @@ class WebServer:
             mission_mode=mission_mode,
             max_steps=max_steps,
             solar_charging=solar_charging,
+            map_source=map_source or SimulationConfig().map_source,
+            cell_m=cell_m,
         )
         config.validate()
         self.config = config
@@ -198,7 +202,7 @@ class WebServer:
 def main(argv: list[str] | None = None) -> None:
     import argparse
 
-    from config.config import MISSION_MODES, NAVIGATION_MODES
+    from config.config import MAP_SOURCES, MISSION_MODES, NAVIGATION_MODES
 
     parser = argparse.ArgumentParser(description="Live 3D Mars rover viewer.")
     parser.add_argument("--host", default="127.0.0.1")
@@ -215,6 +219,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--rovers", type=int, default=3)
     parser.add_argument("--seed", type=int, default=2025)
     parser.add_argument("--max-steps", type=int, default=500)
+    parser.add_argument("--map", dest="map_source", default=SimulationConfig().map_source,
+                        choices=MAP_SOURCES,
+                        help="Terrain: mars (Jezero crater) or atacama (Atacama Desert). "
+                        "The seed picks the part of the map.")
+    parser.add_argument("--cell-m", type=float, default=None,
+                        help="Size of one hex cell in metres (default: 50 mars, 20 atacama).")
     parser.add_argument(
         "--charging",
         action=argparse.BooleanOptionalAction,
@@ -225,7 +235,7 @@ def main(argv: list[str] | None = None) -> None:
 
     print(
         f"Navigation: {args.navigation_mode} | mission: {args.mission_mode} | "
-        f"rovers: {args.rovers} | seed: {args.seed}"
+        f"rovers: {args.rovers} | seed: {args.seed} | map: {args.map_source}"
     )
     WebServer(
         host=args.host,
@@ -236,6 +246,8 @@ def main(argv: list[str] | None = None) -> None:
         mission_mode=args.mission_mode,
         max_steps=args.max_steps,
         solar_charging=args.charging,
+        map_source=args.map_source,
+        cell_m=args.cell_m,
     ).serve_forever()
 
 

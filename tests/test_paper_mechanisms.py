@@ -38,12 +38,14 @@ def _slip(homeostat):
 
 
 def test_slip_alarm_after_consecutive_slip_steps():
-    homeostat = Homeostat(HomeostatConfig())
-    first = _slip(homeostat)
-    assert first.instantaneous < HomeostatConfig().s_crit
-    assert first.alarm is None
-    second = _slip(homeostat)
-    assert second.critical and second.alarm == "slip"
+    config = HomeostatConfig()
+    homeostat = Homeostat(config)
+    for _ in range(config.slip_alarm_steps - 1):
+        reading = _slip(homeostat)
+        assert reading.instantaneous < config.s_crit
+        assert reading.alarm is None
+    last = _slip(homeostat)
+    assert last.critical and last.alarm == "slip"
 
 
 def test_specification_has_no_slip_alarm():

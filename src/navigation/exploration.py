@@ -19,7 +19,7 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from src.model.types import Position, hex_distance
+from src.model.types import Position, hex_distance, squeezed
 from src.navigation.board import HexGridBoard
 from src.navigation.costs import TerrainCost, mean_cost
 from src.navigation.planning import UNKNOWN_CELL_COST
@@ -67,6 +67,7 @@ def frontier_targets(
     start = observation.position
     known = rover.known_terrain
     first_actions = board.actions(start, observation)
+    blocked = board.known_blocker(observation, rover.known_terrain)
     if not first_actions:
         return []
 
@@ -88,6 +89,8 @@ def frontier_targets(
         neighbours = first_actions if position == start else board.neighbors(position)
         for neighbour in neighbours:
             if neighbour in observation.lidar_obstacles:
+                continue
+            if squeezed(position, neighbour, blocked):
                 continue
             step = neighbour if position == start else first[position]
             info = known.get(neighbour)

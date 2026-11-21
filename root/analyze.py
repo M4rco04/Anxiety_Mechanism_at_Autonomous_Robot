@@ -27,7 +27,7 @@ from typing import Any
 
 import pandas as pd
 
-from config.config import HomeostatConfig, SimulationConfig
+from config.config import DEFAULT_CELL_M, MAP_SOURCES, HomeostatConfig, SimulationConfig
 from src.analytics.benchmark import rate_interval, wilson_interval
 from src.analytics.metrics import collect_episode_metrics, collect_rover_metrics
 from src.model.model import MarsSimulation
@@ -52,6 +52,17 @@ def _operational(rover) -> bool:
     if rover.is_destroyed or rover.battery <= 0:
         return False
     return not (rover.is_overturned and rover.recovery_steps_left <= 0)
+
+
+def _map_text(args: argparse.Namespace) -> str:
+    """Terrain description for the report header."""
+
+    from src.environment.real_maps import REAL_MAPS
+
+    cell = args.cell_m if args.cell_m is not None else DEFAULT_CELL_M[args.map_source]
+    size = f"{getattr(args, 'width', 50)}×{getattr(args, 'height', 50)} hex cells of {cell:g} m"
+    return (f"terrain: **{REAL_MAPS[args.map_source].title}**, a window of {size} "
+            "per seed (the seed picks the part of the map)")
 
 
 def _run_one(task: tuple[SimulationConfig, str, str, int, str, int]) -> dict[str, Any]:
@@ -112,6 +123,9 @@ def _run_one(task: tuple[SimulationConfig, str, str, int, str, int]) -> dict[str
         "charging_steps": int(metrics["charging_steps"]),
         "steps": int(metrics["steps"]),
         "end_reason": model.termination_reason,
+        "map": model.map_info.get("map"),
+        "window_x_m": (model.map_info.get("window_min_xy") or [None, None])[0],
+        "window_y_m": (model.map_info.get("window_min_xy") or [None, None])[1],
     }
     return {"episode": episode, "curve": curve}
 
@@ -387,8 +401,8 @@ def write_report(
         "",
         (
             f"Simulations per variant and test: **{args.runs}**, seeds {args.base_seed}–"
-            f"{args.base_seed + args.runs - 1} (the same maps for every variant), map "
-            f"{args.width}×{args.height}, step limit {args.max_steps}, stress threshold "
+            f"{args.base_seed + args.runs - 1} (the same maps for every variant), "
+            f"{_map_text(args)}, step limit {args.max_steps}, stress threshold "
             f"S_crit = {args.s_crit:g}, solar charging {'on' if args.charging else 'off'}, "
             f"camera RGB noise σ = {args.rgb_noise:g}, route points {args.waypoints}."
         ),
@@ -531,6 +545,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--width", type=int, default=50)
     parser.add_argument("--height", type=int, default=50)
     parser.add_argument("--max-steps", type=int, default=500, help="Step limit per simulation.")
+    parser.add_argument("--map", dest="map_source", default=SimulationConfig().map_source,
+                        choices=MAP_SOURCES,
+                        help="Terrain: mars (Jezero crater) or atacama (Atacama Desert). "
+                        "The seed picks the part of the map.")
+    parser.add_argument("--cell-m", type=float, default=None,
+                        help="Size of one hex cell in metres (default: 50 mars, 20 atacama).")
     parser.add_argument("--waypoints", type=int, default=defaults.goal_waypoints,
                         help="Route points in the goal test.")
     parser.add_argument("--s-crit", type=float, default=HomeostatConfig().s_crit,
@@ -541,6 +561,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Camera RGB noise (std per channel); 0 = perfect recognition.")
     parser.add_argument("--map-seed", type=int, default=None,
                         help="Seed of the simulation drawn on the swarm stress map (default: base seed).")
+    parser.add_argument("--traction", action=argparse.BooleanOptionalAction, default=True,
+                        help="Terrain physics from the literature (P3-AT traction of Wang et al. 2015, sand on "
+                        "slopes, dust blocking solar power); --no-traction = the previous terrain physics.")
+    parser.add_argument("--relief", action=argparse.BooleanOptionalAction, default=True,
+                        help="Landforms smaller than the mapped units (craters, dunes, outcrops, ravines, boulder fields); "
+                        "--no-relief = map classes only (the previous maps).")
     parser.add_argument("--no-plots", action="store_true", help="Skip the figures.")
     parser.add_argument("--output", type=Path, default=Path("results") / "analysis")
     return parser
@@ -564,7 +590,20 @@ def main(argv: list[str] | None = None) -> int:
         solar_charging=args.charging,
         rgb_noise_sigma=args.rgb_noise,
         goal_waypoints=args.waypoints,
+        map_source=args.map_source,
+        cell_m=args.cell_m,
+        traction_model=args.traction,
+        real_map_relief=args.relief,
     )
+    if not args.traction:
+        # Previous physics: flat sand, full charging next to dust, and the
+        # previous hand-picked safe slope.
+        config = replace(
+            config,
+            sand_slope_model=False,
+            dust_solar_fraction=1.0,
+            homeostat=replace(config.homeostat, alpha_safe=25.0),
+        )
     config.validate()
 
     seeds = range(args.base_seed, args.base_seed + args.runs)
@@ -576,8 +615,12 @@ def main(argv: list[str] | None = None) -> int:
     ]
     print(f"Running {len(tasks)} simulations...")
     if args.workers > 1:
+        results = []
         with ProcessPoolExecutor(max_workers=args.workers) as executor:
-            results = list(executor.map(_run_one, tasks, chunksize=4))
+            for index, result in enumerate(executor.map(_run_one, tasks, chunksize=4), 1):
+                results.append(result)
+                if index % 500 == 0 or index == len(tasks):
+                    print(f"  {index}/{len(tasks)}", flush=True)
     else:
         results = []
         for index, task in enumerate(tasks, 1):

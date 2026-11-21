@@ -93,10 +93,24 @@ def test_rover_plans_a_way_out_of_feared_terrain():
     model = _world("emotional", terrain="DeepShadow", overrides={(24, 20): "SafeRegolith"}, vision_range=5)
     rover = _rover(model, START, "emotional")
     rover._face(START, (24, 20))
+    # The rover drove in from the safe cell, so the way back is known.
+    rover.visited.update({(24, 20), (23, 20), (22, 20), (21, 20)})
     rover.learn_fear(hex_to_rgb(DeepShadow.color), intensity=1.0, source="self")
     decision = rover.strategy.choose_next(rover, build_observation(rover))
     assert decision.reason == "leaving feared terrain"
+    assert decision.next_position in rover.visited
     assert hex_distance(decision.next_position, (24, 20)) < hex_distance(START, (24, 20))
+
+
+def test_rover_does_not_escape_into_terrain_it_has_only_seen():
+    # The same shadow, but the safe cell was only seen, never driven on.
+    model = _world("emotional", terrain="DeepShadow", overrides={(24, 20): "SafeRegolith"}, vision_range=5)
+    rover = _rover(model, START, "emotional")
+    rover._face(START, (24, 20))
+    rover.learn_fear(hex_to_rgb(DeepShadow.color), intensity=1.0, source="self")
+    decision = rover.strategy.choose_next(rover, build_observation(rover))
+    assert decision.reason not in {"leaving feared terrain"}
+    assert not decision.reason.startswith("retreating")
 
 
 def test_stress_below_the_alarm_adds_up_per_terrain():
@@ -186,8 +200,14 @@ def test_fuzzy_rover_retreats_from_dangerous_ground():
     model = _world("fuzzy", overrides={(5, 5): "Ventifacts"}, size=12)
     rover = _rover(model, (5, 5), "fuzzy")
     rover.wheel_condition = 20.0  # a damaged rover takes no risks
-    decision = rover.strategy.choose_next(rover, build_observation(rover))
+    observation = build_observation(rover)
+    neighbours = model.grid.get_neighborhood((5, 5), include_center=False, radius=1)
+    came_from = next(cell for cell in neighbours if cell in rover.known_terrain)
+    rover.visited.add(came_from)
+    rover.path = [came_from, (5, 5)]
+    decision = rover.strategy.choose_next(rover, observation)
     assert decision.reason.startswith("retreating")
+    assert decision.next_position == came_from
     assert model.terrain_at(decision.next_position).terrain_type.value == "SafeRegolith"
     assert rover.strategy.statistics()["retreats"] == 1
 
@@ -205,3 +225,50 @@ def test_rate_interval_accounts_for_rovers_of_one_run():
     low, high = rate_interval(hits, sizes)
     wilson_low, wilson_high = wilson_interval(30, 60)
     assert high - low > wilson_high - wilson_low
+
+
+# ----------------------------------------------------------------------
+# LRTA* goal navigation
+# ----------------------------------------------------------------------
+def _wall_world(mode: str, lookahead: int, max_steps: int = 2000):
+    wall = {(10, y): "SteepSlope" for y in range(3, 20)}
+    return make_model(
+        width=20,
+        height=20,
+        terrain_layout={
+            **layout(20, 20),
+            **{cell: (TERRAIN_BY_NAME[name], 0.0, 36.0) for cell, name in wall.items()},
+        },
+        num_rovers=1,
+        seed=8,
+        navigation_mode=mode,
+        mission_mode="goal_navigation",
+        targets=((16, 12),),
+        goal_waypoints=1,
+        max_steps=max_steps,
+        lrta_lookahead=lookahead,
+    )
+
+
+def test_classic_lrta_star_learns_its_way_around_a_wall():
+    # lookahead 1 = Korf's LRTA*: slow, but it learns h and gets there.
+    model = _wall_world("fuzzy", lookahead=1)
+    rover = model.rovers()[0]
+    while model.running:
+        model.step()
+    assert rover.mission_status == "goal_reached"
+    assert model.termination_reason == "all_goals_reached"
+    assert all(model.terrain_at(cell).terrain_type.value != "SteepSlope" for cell in rover.path)
+    # h was raised above the hex distance in front of the wall.
+    learned = rover.strategy.h_cost
+    assert any(value > hex_distance(cell, (16, 12)) for cell, value in learned.items())
+
+
+def test_lrta_star_lookahead_learns_the_detour_faster():
+    slow = _wall_world("fuzzy", lookahead=1)
+    fast = _wall_world("fuzzy", lookahead=100)
+    for model in (slow, fast):
+        while model.running:
+            model.step()
+    assert fast.rovers()[0].mission_status == "goal_reached"
+    assert fast.step_count < slow.step_count / 5

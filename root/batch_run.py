@@ -7,7 +7,7 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
-from config.config import SimulationConfig
+from config.config import MAP_SOURCES, SimulationConfig
 from src.analytics.benchmark import BenchmarkManager, ExperimentSpec
 from src.analytics.reporting import print_summary
 from src.navigation.registry import available_strategies
@@ -44,6 +44,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--height", type=int, default=50)
     parser.add_argument("--rovers", type=int, default=3)
     parser.add_argument("--max-steps", type=int, default=500)
+    parser.add_argument("--map", dest="map_source", default=None,
+                        choices=MAP_SOURCES,
+                        help="Terrain: mars (Jezero crater) or atacama (Atacama Desert). "
+                        "The seed picks the part of the map.")
+    parser.add_argument("--cell-m", type=float, default=None,
+                        help="Size of one hex cell in metres (default: 50 mars, 20 atacama).")
     parser.add_argument(
         "--smoke",
         action="store_true",
@@ -68,6 +74,8 @@ def main(argv: list[str] | None = None) -> int:
         max_steps=args.max_steps,
         exploration_budget=min(config.exploration_budget, args.max_steps),
         targets=None,
+        map_source=args.map_source or config.map_source,
+        cell_m=args.cell_m if args.cell_m is not None else config.cell_m,
     )
     config.validate()
 

@@ -74,7 +74,7 @@ def test_without_leak_mild_losses_add_up():
     homeostat = model.config.homeostat
     alarms = [
         rover._chronic_alarm((179, 139, 109), homeostat.chronic_rest + 5.0)
-        for _ in range(10)
+        for _ in range(int(homeostat.chronic_alarm / 5.0) + 1)
     ]
     assert any(alarms)
 
@@ -91,7 +91,7 @@ def test_fear_intensity_follows_the_size_of_the_danger():
     rover = add_rover(model, (0, 0), navigation_mode="emotional")
     homeostat = model.config.homeostat
     at_threshold = rover._acute_intensity(_reading(homeostat.s_crit))
-    rocks = rover._acute_intensity(_reading(58.0))
+    rocks = rover._acute_intensity(_reading(homeostat.s_crit + 18.0))
     overturn = rover._acute_intensity(_reading(300.0))
     assert at_threshold == pytest.approx(homeostat.acute_min_intensity)
     assert at_threshold < rocks < overturn == pytest.approx(1.0)
@@ -142,8 +142,8 @@ def test_stress_raises_risk_aversion_of_anxious_rover_only():
 
     model = _model()
     rover = add_rover(model, (0, 0))
-    rover.stress_level = 40.0
     config = model.config
+    rover.stress_level = config.homeostat.s_crit
     emotional = create_strategy("emotional", config, 1)
     online = create_strategy("online", config, 1)
     fuzzy = create_strategy("fuzzy", config, 1)
@@ -194,8 +194,10 @@ def test_retreat_never_goes_onto_another_strongly_feared_terrain():
         model, centre, navigation_mode="emotional",
         strategy=create_strategy("emotional", model.config, 3),
     )
-    # The rover came from a slope, then got stuck in this sand.
+    # The rover came from a slope, then got stuck in this sand; earlier it
+    # had also driven over the safe neighbour.
     rover.path = [neighbours[1], centre]
+    rover.visited.update({neighbours[0], neighbours[1], centre})
     rover.learn_fear(hex_to_rgb(TERRAIN_COLORS["SteepSlope"]), intensity=0.9)
     rover.learn_fear(hex_to_rgb(TERRAIN_COLORS["LooseSand"]), intensity=1.0)
 
@@ -212,3 +214,36 @@ def test_retreat_never_goes_onto_another_strongly_feared_terrain():
     assert _retreat_decision(
         rover, strategy._get_board(rover), actions, cell_cost, strategy._retreat_level()
     ) is None
+
+
+def test_retreat_only_onto_cells_the_rover_has_driven_on():
+    from src.navigation.strategies import _retreat_decision
+    from tests.conftest import layout
+
+    centre = (5, 5)
+    model = make_model(
+        width=11, height=11, num_rovers=0, seed=3, navigation_mode="emotional",
+        rgb_fov_deg=360.0, rgb_noise_sigma=0.0, look_before_step=False,
+        terrain_layout=layout(11, 11, overrides={centre: "LooseSand"}),
+    )
+    rover = add_rover(
+        model, centre, navigation_mode="emotional",
+        strategy=create_strategy("emotional", model.config, 3),
+    )
+    from src.environment.terrain import TERRAIN_COLORS
+    from src.model.types import hex_to_rgb
+    from src.navigation.observation import build_observation
+
+    rover.learn_fear(hex_to_rgb(TERRAIN_COLORS["LooseSand"]), intensity=1.0)
+    build_observation(rover)  # the cameras see the safe ground around
+    strategy = rover.strategy
+    board = strategy._get_board(rover)
+    neighbours = model.grid.get_neighborhood(centre, include_center=False, radius=1)
+    cell_cost = strategy._cell_cost(rover, None)
+    level = strategy._retreat_level()
+    # Seen but never driven on: no retreat.
+    assert _retreat_decision(rover, board, neighbours, cell_cost, level) is None
+    # Driven on: that is the way back.
+    rover.visited.add(neighbours[2])
+    decision = _retreat_decision(rover, board, neighbours, cell_cost, level)
+    assert decision is not None and decision.next_position == neighbours[2]

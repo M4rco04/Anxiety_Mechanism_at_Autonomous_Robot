@@ -13,7 +13,7 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
-from config.config import SimulationConfig
+from config.config import MAP_SOURCES, SimulationConfig
 from src.simulation.session import SimulationSession, snapshot_to_dict
 
 
@@ -43,6 +43,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="exploration",
     )
     parser.add_argument("--max-steps", type=int, default=None)
+    parser.add_argument("--map", dest="map_source", default=None,
+                        choices=MAP_SOURCES,
+                        help="Terrain: mars (Jezero crater) or atacama (Atacama Desert). "
+                        "The seed picks the part of the map.")
+    parser.add_argument("--cell-m", type=float, default=None,
+                        help="Size of one hex cell in metres (default: 50 mars, 20 atacama).")
     parser.add_argument("--output", type=Path, default=None)
     return parser
 
@@ -64,6 +70,8 @@ def main(argv: list[str] | None = None) -> int:
         navigation_mode=args.navigation_mode,
         mission_mode=args.mission_mode,
         targets=None if args.mission_mode == "exploration" else config.targets,
+        map_source=args.map_source or config.map_source,
+        cell_m=args.cell_m if args.cell_m is not None else config.cell_m,
     )
     config.validate()
 
