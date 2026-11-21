@@ -12,7 +12,7 @@ from tests.conftest import layout, make_model
 
 
 def test_scientific_modes_instantiate_successfully():
-    for mode in ("online", "emotional", "swarm_emotional"):
+    for mode in ("online", "emotional", "fuzzy", "swarm_emotional"):
         strategy = create_strategy(mode, SimulationConfig(), seed=1)
         assert strategy is not None
         assert getattr(strategy, "IMPLEMENTED", False) is True

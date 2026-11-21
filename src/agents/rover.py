@@ -1,8 +1,9 @@
-"""Pioneer 3-DX rover agent.
+"""Pioneer rover agent (class name kept from the 3-DX of the 2017 paper;
+the drive and traction follow the skid-steered P3-AT of Wang et al. 2015).
 
 The rover owns its physical state, sensors, homeostat, fear memory and radio
-behaviour.  It intentionally delegates route selection to an external
-navigation strategy; this is the handoff point for Karol's algorithms.
+behaviour.  It delegates route selection to an external navigation strategy
+(``src/navigation/strategies.py``).
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from src.agents.fear import (
 from src.agents.homeostat import Homeostat, HomeostatReading
 from src.communication.radio import RadioPacket
 from src.environment.terrain import Boulders, TerrainPatch, TerrainType
+from src.environment.traction import turn_energy_factor
 from src.model.types import (
     RGB,
     Position,
@@ -29,6 +31,7 @@ from src.model.types import (
     hex_distance,
     hex_vector,
     rgb_distance,
+    squeezed,
 )
 from src.navigation.observation import build_observation
 from src.navigation.types import NavigationDecision, NavigationStrategy
@@ -68,6 +71,10 @@ class Pioneer3DXAgent(mesa.Agent):
         self.base_speed = 1.0
         self.target_speed = 1.0
         self.current_speed = 1.0
+        # Slip ratio of the last cell from the traction model, and battery
+        # spent on skid-steer turns.
+        self.last_slip = 0.0
+        self.turn_energy = 0.0
         self.wheel_condition = 100.0
         self.hull_condition = 100.0
         self.stress_level = 0.0
@@ -78,6 +85,8 @@ class Pioneer3DXAgent(mesa.Agent):
         self.vision_range = int(config.vision_range)
         self.lidar_range = int(config.lidar_range)
         self.heading: Position = (0, 1)
+        # Direction the cameras look in, as a cube-coordinate vector.
+        self.heading_cube: tuple[int, int, int] = (0, 1, -1)
 
         # Environment exposure / safety
         self.shadow_exposure_time = 0
@@ -95,9 +104,14 @@ class Pioneer3DXAgent(mesa.Agent):
             maxlen=max(1, int(config.stm_steps))
         )
         self.exposures: Counter[RGB] = Counter()
+        # Stress below the alarm level, added up per terrain (accumulated-
+        # stress alarm, see ``HomeostatConfig.chronic_alarm``).
+        self.chronic_stress: dict[RGB, float] = {}
+        self.chronic_imprints = 0
         self.context_imprints = 0
         self.charging = False
         self.charging_steps = 0
+        self.dust_shaded_charging_steps = 0
         self.energy_charged = 0.0
         self.is_destroyed = False
 
@@ -109,8 +123,16 @@ class Pioneer3DXAgent(mesa.Agent):
         self.path: list[Position] = []
         # Terrain the rover has seen with its cameras/LIDAR (for route planning).
         self.known_terrain: dict = {}
+        # Order in which cells became known, and how much of each peer's map
+        # was already received (swarm map sharing transfers only the rest).
+        self.known_order: list[Position] = []
+        self.map_sync: dict[int, int] = {}
+        # Colour of each cell as read by the camera (mean of noisy readings).
+        self.perceived: dict[Position, RGB] = {}
+        self._reading_sums: dict[Position, list[int]] = {}
         self.visited: set[Position] = set()
         self.moves = 0
+        self.turns = 0
         self.backtracks = 0
         self.blocked_moves = 0
         self.collisions = 0
@@ -214,7 +236,7 @@ class Pioneer3DXAgent(mesa.Agent):
         cos_limit = (
             math.cos(math.radians(fov / 2.0)) if fov < 359.9 else -2.0
         )
-        heading_px = self._hex_to_pixel(hex_vector((0, 0), self.heading)) if self.heading != (0, 0) else (0.0, 1.0)
+        heading_px = self._hex_to_pixel(self.heading_cube)
         heading_norm = math.hypot(*heading_px) or 1.0
 
         for position in positions:
@@ -237,7 +259,7 @@ class Pioneer3DXAgent(mesa.Agent):
     def _sensor_signature(self, signature: RGB, sigma: float) -> RGB:
         if sigma <= 0:
             return signature
-        rng = self.model.rng
+        rng = self.model.sensor_rng
         values = [
             int(clamp(channel + float(rng.normal(0.0, sigma)), 0, 255))
             for channel in signature
@@ -252,9 +274,49 @@ class Pioneer3DXAgent(mesa.Agent):
             1.5 * r,
         )
 
+    def integrate_reading(self, position: Position, reading: RGB) -> RGB:
+        """Store a camera reading of a cell; return the mean of its readings.
+
+        Repeated readings average the camera noise out, so terrain the rover
+        has looked at many times is recognised better.
+        """
+
+        if float(self.model.config.rgb_noise_sigma) <= 0:
+            self.perceived[position] = reading
+            return reading
+        sums = self._reading_sums.get(position)
+        if sums is None:
+            sums = [0, 0, 0, 0]
+            self._reading_sums[position] = sums
+        sums[0] += 1
+        sums[1] += reading[0]
+        sums[2] += reading[1]
+        sums[3] += reading[2]
+        count = sums[0]
+        mean = (
+            round(sums[1] / count),
+            round(sums[2] / count),
+            round(sums[3] / count),
+        )
+        self.perceived[position] = mean
+        return mean
+
+    def look_at(self, position: Position) -> RGB | None:
+        """Take one camera reading of a cell and return its mean colour."""
+
+        terrain = self.model.terrain_at(position)
+        if terrain is None:
+            return None
+        reading = self._sensor_signature(
+            terrain.optical_signature, float(self.model.config.rgb_noise_sigma)
+        )
+        return self.integrate_reading(position, reading)
+
     def current_signature(self) -> RGB | None:
-        terrain = self.current_terrain
-        return terrain.optical_signature if terrain is not None else None
+        """Colour of the cell under the rover as its camera reads it."""
+
+        signature = self.perceived.get(self.pos)
+        return signature if signature is not None else self.look_at(self.pos)
 
     # ------------------------------------------------------------------
     # Fear memory
@@ -455,8 +517,12 @@ class Pioneer3DXAgent(mesa.Agent):
             }:
                 self.mission_status = decision.status
                 self.status_reason = decision.reason
-            elif decision is not None and decision.status == "waiting":
-                # Standing still on purpose (e.g. waiting for the swarm).
+            elif decision is not None and decision.status in {"waiting", "turning"}:
+                # Standing still on purpose (waiting for the swarm, or
+                # turning the cameras to a neighbour not seen yet).
+                if decision.face is not None and decision.face != self.pos:
+                    self._face(self.pos, decision.face)
+                    self.turns += 1
                 self.mission_status = "active"
                 self.status_reason = decision.reason
             elif self.target is not None and self.pos == self.target:
@@ -478,11 +544,7 @@ class Pioneer3DXAgent(mesa.Agent):
             hull_damage=max(0.0, self.hull_prev - self.hull_condition),
             wheel_damage=max(0.0, self.wheel_prev - self.wheel_condition),
         )
-        self.stress_sum += self.stress_level
-        self.stress_samples += 1
-        if reading.critical:
-            self.critical_events += 1
-        self._handle_anxiety(reading)
+        self._feel(reading)
         self._check_destruction()
         self._update_mission_status()
 
@@ -510,7 +572,7 @@ class Pioneer3DXAgent(mesa.Agent):
         self.target_speed = self.base_speed
         self.current_speed = self.base_speed
         self.model.grid.move_agent(self, next_position)
-        self.heading = self._direction_from_step(old_position, next_position)
+        self._face(old_position, next_position)
         self.path.append(next_position)
         self.visited.add(next_position)
         self.moves += 1
@@ -554,14 +616,21 @@ class Pioneer3DXAgent(mesa.Agent):
         if self.is_overturned and not self._overturn_counted:
             self._overturn_counted = True
             self.overturns += 1
-            self.recovery_steps_left = int(
-                self.model.config.overturn_recovery_steps
+            config = self.model.config
+            recovers = float(self.model.rng.random()) < float(
+                config.overturn_recovery_probability
+            )
+            self.recovery_steps_left = (
+                int(config.overturn_recovery_steps) if recovers else 0
             )
             self.model.record_event(
                 "overturned", rover_id=self.unique_id, position=self.pos
             )
+            if self.recovery_steps_left <= 0:
+                self.mission_status = "overturned"
+                self.status_reason = "overturned - rover broken"
 
-        signature = terrain.optical_signature
+        signature = self.look_at(next_position)
         if self.fear_intensity(signature) > 0.0:
             self.fear_entries += 1
 
@@ -577,6 +646,9 @@ class Pioneer3DXAgent(mesa.Agent):
         terrain = self.model.terrain_at(position)
         if terrain is None or not terrain.traversable:
             return False
+        # The gap between two boulders is narrower than the rover.
+        if self.pos is not None and squeezed(self.pos, position, self.model.is_boulder):
+            return False
         return not (
             self.model.rover_at(position, exclude_id=self.unique_id) is not None
             and not self.model.config.allow_rover_overlap
@@ -585,6 +657,39 @@ class Pioneer3DXAgent(mesa.Agent):
     @staticmethod
     def _direction_from_step(old: Position, new: Position) -> Position:
         return (new[0] - old[0], new[1] - old[1])
+
+    def _face(self, old: Position, new: Position) -> None:
+        """Point the rover (and its cameras) from ``old`` towards ``new``.
+
+        The P3-AT is skid-steered: turning makes its wheels skid sideways,
+        which costs friction work (Wang et al. 2015, ICR coefficient 1.47
+        when turning in place). The turn is charged in battery.
+        """
+
+        new_cube = hex_vector(old, new)
+        self._charge_turn(self.heading_cube, new_cube)
+        self.heading = self._direction_from_step(old, new)
+        self.heading_cube = new_cube
+
+    def _charge_turn(
+        self, old_cube: tuple[int, int, int], new_cube: tuple[int, int, int]
+    ) -> None:
+        config = self.model.config
+        if not getattr(config, "traction_model", False) or old_cube == new_cube:
+            return
+        a = self._hex_to_pixel(old_cube)
+        b = self._hex_to_pixel(new_cube)
+        if a == (0.0, 0.0) or b == (0.0, 0.0):
+            return
+        angle = abs(math.atan2(a[0] * b[1] - a[1] * b[0], a[0] * b[0] + a[1] * b[1]))
+        cost = float(config.flat_drain) * turn_energy_factor(
+            angle, float(getattr(self.model, "cell_m", config.resolved_cell_m))
+        )
+        self.battery = clamp(self.battery - cost, 0.0, 100.0)
+        self.turn_energy += cost
+
+    def is_facing(self, position: Position) -> bool:
+        return hex_vector(self.pos, position) == self.heading_cube
 
     def _update_exposure(
         self, terrain_type: TerrainType | None, *, moved: bool
@@ -610,19 +715,72 @@ class Pioneer3DXAgent(mesa.Agent):
             self.short_term_memory.append((self.pos, signature))
             self.exposures[signature] += 1
 
+    def _feel(self, reading: HomeostatReading) -> None:
+        """Account one homeostat reading and let the anxiety react to it."""
+
+        self.stress_sum += self.stress_level
+        self.stress_samples += 1
+        if reading.critical:
+            self.critical_events += 1
+        self._handle_anxiety(reading)
+
+    def _chronic_alarm(self, signature: RGB, stress: float) -> bool:
+        """Add up sub-threshold stress per terrain; True at the alarm level."""
+
+        homeostat = self.model.config.homeostat
+        # Leaky accumulator: old sums fade every step, so only a sustained
+        # loss reaches the alarm, not occasional mild ones over the mission.
+        retention = float(homeostat.chronic_retention)
+        if retention < 1.0:
+            for known in self.chronic_stress:
+                self.chronic_stress[known] *= retention
+        limit = float(homeostat.chronic_alarm)
+        excess = stress - float(homeostat.chronic_rest)
+        if limit <= 0 or excess <= 0:
+            return False
+        tolerance = float(self.model.config.fear_rgb_tolerance)
+        key = next(
+            (
+                known
+                for known in self.chronic_stress
+                if rgb_distance(known, signature) <= tolerance
+            ),
+            signature,
+        )
+        total = self.chronic_stress.get(key, 0.0) + excess
+        if total >= limit:
+            self.chronic_stress[key] = 0.0
+            return True
+        self.chronic_stress[key] = total
+        return False
+
     def _handle_anxiety(self, reading: HomeostatReading) -> None:
         self._remember_circumstances()
         homeostat = self.model.config.homeostat
         if homeostat.imprint_on_instantaneous:
-            # Acute event: imprint the cell the rover stands on, unless this
-            # terrain is already strongly feared (avoids imprinting every step).
-            if reading.critical and self.emotional_enabled:
+            # Acute event (or accumulated stress): imprint the cell the rover
+            # stands on, unless this terrain is already strongly feared
+            # (avoids imprinting every step).
+            if self.emotional_enabled:
                 signature = self.current_signature()
+                alarm = reading.critical
+                intensity = self._acute_intensity(reading)
+                if not alarm and signature is not None:
+                    # Only real losses add up (battery, slip, damage), not
+                    # the slope term, which is a warning and not a loss.
+                    losses = reading.instantaneous - reading.components.get(
+                        "slope", 0.0
+                    )
+                    alarm = self._chronic_alarm(signature, losses)
+                    self.chronic_imprints += int(alarm)
+                    if homeostat.graded_fear:
+                        intensity = float(homeostat.chronic_intensity)
                 if (
-                    signature is not None
+                    alarm
+                    and signature is not None
                     and self.fear_intensity(signature) < homeostat.reimprint_below
                 ):
-                    self._imprint(signature)
+                    self._imprint(signature, intensity)
             self.stress_armed = self.stress_level < (
                 homeostat.s_crit * homeostat.rearm_factor
             )
@@ -680,13 +838,19 @@ class Pioneer3DXAgent(mesa.Agent):
         self.previous_position = self.pos
         self.target_speed = 0.0
         self.current_speed = 0.0
-        self.battery = min(
-            float(config.solar_charge_stop),
-            self.battery + float(config.solar_charge_rate),
-        )
+        shaded = self.model.dust_shaded(self.pos)
+        rate = float(config.solar_charge_rate)
+        if shaded:
+            rate *= float(config.dust_solar_fraction)
+            self.dust_shaded_charging_steps += 1
+        self.battery = min(float(config.solar_charge_stop), self.battery + rate)
         self.energy_charged += self.battery - self.battery_prev
         self.charging_steps += 1
-        self.last_action_reason = "charging from solar panels"
+        self.last_action_reason = (
+            "charging from solar panels (dust storm nearby)"
+            if shaded
+            else "charging from solar panels"
+        )
 
         reading = self.update_homeostat(
             delta_battery=0.0,
@@ -696,11 +860,7 @@ class Pioneer3DXAgent(mesa.Agent):
             wheel_condition=self.wheel_condition,
             current_slope=self.current_slope,
         )
-        self.stress_sum += self.stress_level
-        self.stress_samples += 1
-        if reading.critical:
-            self.critical_events += 1
-        self._handle_anxiety(reading)
+        self._feel(reading)
 
         if self.battery >= config.solar_charge_stop:
             self.charging = False
@@ -741,11 +901,7 @@ class Pioneer3DXAgent(mesa.Agent):
             wheel_condition=self.wheel_condition,
             current_slope=self.current_slope,
         )
-        self.stress_sum += self.stress_level
-        self.stress_samples += 1
-        if reading.critical:
-            self.critical_events += 1
-        self._handle_anxiety(reading)
+        self._feel(reading)
         self._check_destruction()
 
         if not self.is_destroyed and self.recovery_steps_left <= 0:
@@ -760,9 +916,26 @@ class Pioneer3DXAgent(mesa.Agent):
         else:
             self._update_mission_status()
 
-    def _imprint(self, signature: RGB) -> None:
+    def _acute_intensity(self, reading: HomeostatReading) -> float:
+        """Imprint intensity of an acute (or slip) alarm.
+
+        Graded fear: the bigger the stress, the stronger the fear, from
+        ``acute_min_intensity`` at the threshold up to 1 at
+        ``fear_full_stress``. Without grading every imprint is 1.0.
+        """
+
+        homeostat = self.model.config.homeostat
+        if not homeostat.graded_fear:
+            return 1.0
+        return clamp(
+            reading.instantaneous / float(homeostat.fear_full_stress),
+            float(homeostat.acute_min_intensity),
+            1.0,
+        )
+
+    def _imprint(self, signature: RGB, intensity: float = 1.0) -> None:
         self.learn_fear(
-            signature, intensity=1.0, source="self", source_position=self.pos
+            signature, intensity=intensity, source="self", source_position=self.pos
         )
         self.model.record_event(
             "fear_imprint",
@@ -772,18 +945,19 @@ class Pioneer3DXAgent(mesa.Agent):
         )
         if self.navigation_mode == "swarm_emotional":
             self.broadcast_danger(signature, self.pos)
-        self._imprint_context(signature)
+        self._imprint_context(signature, intensity)
 
-    def _imprint_context(self, signature: RGB) -> None:
+    def _imprint_context(self, signature: RGB, strength: float = 1.0) -> None:
         """Associate the circumstances that preceded the alarm.
 
         Everything in short-term memory before the current cell is imprinted
-        with ``context_imprint_weight``, weakened for familiar terrain
-        (latent inhibition), so the rover avoids also what led to the danger.
+        with ``context_imprint_weight`` times the strength of the main imprint,
+        weakened for familiar terrain (latent inhibition), so the rover avoids
+        also what led to the danger.
         """
 
         config = self.model.config
-        weight = float(config.context_imprint_weight)
+        weight = float(config.context_imprint_weight) * float(strength)
         if weight <= 0:
             return
         tolerance = float(config.fear_rgb_tolerance)
@@ -794,9 +968,13 @@ class Pioneer3DXAgent(mesa.Agent):
             if any(rgb_distance(context, other) <= tolerance for other in done):
                 continue
             done.append(context)
-            intensity = weight * math.exp(
-                -self.exposures[context] / float(config.habituation_steps)
+            # Readings of one terrain differ slightly (camera noise).
+            exposures = sum(
+                count
+                for seen, count in self.exposures.items()
+                if rgb_distance(seen, context) <= tolerance
             )
+            intensity = weight * math.exp(-exposures / float(config.habituation_steps))
             if intensity < config.min_context_intensity:
                 continue
             if self.fear_intensity(context) >= intensity:
@@ -838,11 +1016,7 @@ class Pioneer3DXAgent(mesa.Agent):
             current_slope=self.current_slope,
             wheel_damage=max(0.0, self.wheel_prev - self.wheel_condition),
         )
-        self.stress_sum += self.stress_level
-        self.stress_samples += 1
-        if reading.critical:
-            self.critical_events += 1
-        self._handle_anxiety(reading)
+        self._feel(reading)
         self._check_destruction()
 
         if self.is_destroyed:

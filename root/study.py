@@ -2,7 +2,9 @@
 
 All experiments use **held-out maps** (seeds from ``--base-seed``, default
 1000) that were not used while the model parameters were calibrated
-(seeds 0-39), and the frozen default parameters from ``config/config.py``.
+(``uv run tune`` uses seeds 0-99), and the frozen default parameters from
+``config/config.py``. ``--map`` picks the terrain (Jezero crater on Mars by
+default, or the Atacama Desert).
 
 Parts:
   swarm        - which part of the swarm helps: more rovers, a shared map,
@@ -27,9 +29,9 @@ from typing import Any
 
 import pandas as pd
 
-from config.config import HomeostatConfig, SimulationConfig
-from root.analyze import TESTS, _run_one
-from src.analytics.benchmark import wilson_interval
+from config.config import MAP_SOURCES, HomeostatConfig, SimulationConfig
+from root.analyze import TESTS, _map_text, _run_one
+from src.analytics.benchmark import rate_interval
 
 PLAIN, ANXIETY = "Plain", "Anxiety"
 
@@ -37,6 +39,7 @@ PLAIN, ANXIETY = "Plain", "Anxiety"
 SWARM_CONDITIONS: list[tuple[str, str, int, dict[str, Any]]] = [
     ("Plain ×1", "online", 1, {}),
     ("Anxiety ×1", "emotional", 1, {}),
+    ("Fuzzy rules ×1", "fuzzy", 1, {}),
     ("Plain ×3", "online", 3, {}),
     ("Anxiety ×3 (no radio)", "emotional", 3, {}),
     ("Swarm: shared map only", "swarm_emotional", 3, {"swarm_share_fear": False}),
@@ -48,15 +51,23 @@ ABLATIONS: list[tuple[str, dict[str, Any]]] = [
     ("Spec. homeostat (wear, S_crit 75)", {"homeostat": HomeostatConfig.specification()}),
     ("Smoothed-stress trigger", {"homeostat": HomeostatConfig(imprint_on_instantaneous=False)}),
     ("No slip alarm", {"homeostat": HomeostatConfig(slip_alarm_steps=0)}),
+    ("No accumulated-stress alarm", {"homeostat": HomeostatConfig(chronic_alarm=0.0)}),
     ("No context imprint", {"context_imprint_weight": 0.0}),
     ("No fear decay", {"fear_decay": 0.0}),
+    ("No crossing limit in exploration", {"explore_max_aversion": 1000.0}),
+    ("No look before step", {"look_before_step": False}),
+    ("All-or-nothing fear (no grading)", {"homeostat": HomeostatConfig(graded_fear=False)}),
+    ("Leaky accumulated stress (0.9)", {"homeostat": HomeostatConfig(chronic_retention=0.9)}),
+    ("No stress-driven risk aversion", {"stress_risk_aversion": 0.0}),
+    ("Risk-neutral route cost", {"risk_aversion": 0.0, "stress_risk_aversion": 0.0}),
 ]
 
 SENSITIVITY: dict[str, tuple[str, list[float], float]] = {
     # parameter: (label, values, default)
-    "s_crit": ("Stress threshold S_crit", [25, 30, 40, 50, 60, 75], 40),
+    "s_crit": ("Stress threshold S_crit", [30, 40, 50, 55, 65, 75], 55),
     "fear_weight": ("Fear weight (cost per feared cell)", [5, 10, 20, 30, 60, 100], 30),
     "fear_decay": ("Fear decay per step", [0.0, 0.0025, 0.005, 0.01, 0.02, 0.05], 0.005),
+    "alpha_safe": ("Safe slope alpha_safe [deg] (traction limit 19.7)", [14, 16, 18, 20, 22, 25], 20),
 }
 
 NOISE_LEVELS = [0.0, 2.5, 5.0, 10.0, 15.0, 20.0, 30.0]
@@ -66,8 +77,9 @@ NOISE_VARIANTS = [("Plain ×1", "online", 1), ("Anxiety ×1", "emotional", 1), (
 def _apply(config: SimulationConfig, overrides: dict[str, Any]) -> SimulationConfig:
     homeostat = overrides.get("homeostat")
     rest = {k: v for k, v in overrides.items() if k != "homeostat"}
-    if "s_crit" in rest:
-        homeostat = replace(homeostat or config.homeostat, s_crit=rest.pop("s_crit"))
+    for name in ("s_crit", "alpha_safe"):
+        if name in rest:
+            homeostat = replace(homeostat or config.homeostat, **{name: rest.pop(name)})
     config = replace(config, **rest)
     if homeostat is not None:
         config = replace(config, homeostat=homeostat)
@@ -118,7 +130,7 @@ def build_tasks(args: argparse.Namespace, base: SimulationConfig) -> list[tuple]
 # Statistics
 # ----------------------------------------------------------------------
 def rate_rows(frame: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
-    """Per group: rover survival and route completion with Wilson CI."""
+    """Per group: rover survival and route completion with a 95% interval."""
 
     rows = []
     for key, group in frame.groupby(keys, sort=False, dropna=False):
@@ -126,8 +138,8 @@ def rate_rows(frame: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
         rovers = int(group["rovers"].sum())
         survived = int(group["rovers_survived"].sum())
         at_goal = int(group["rovers_at_goal"].sum())
-        s_low, s_high = wilson_interval(survived, rovers)
-        g_low, g_high = wilson_interval(at_goal, rovers)
+        s_low, s_high = rate_interval(group["rovers_survived"], group["rovers"])
+        g_low, g_high = rate_interval(group["rovers_at_goal"], group["rovers"])
         rows.append(
             {
                 **dict(zip(keys, key)),
@@ -200,6 +212,8 @@ def holm(frame: pd.DataFrame) -> pd.DataFrame:
 SWARM_COMPARISONS = [
     # (a, b, what b - a isolates)
     ("Plain ×1", "Anxiety ×1", "anxiety, single rover"),
+    ("Plain ×1", "Fuzzy rules ×1", "expert fuzzy rules, single rover"),
+    ("Anxiety ×1", "Fuzzy rules ×1", "expert rules instead of learned fear"),
     ("Plain ×3", "Anxiety ×3 (no radio)", "anxiety, three rovers"),
     ("Anxiety ×3 (no radio)", "Swarm: shared map only", "sharing the map"),
     ("Swarm: shared map only", "Swarm: map + fear", "sharing fear by radio"),
@@ -262,22 +276,25 @@ def _test_table(tests: pd.DataFrame, extra: str | None = None) -> str:
     return _table(headers, rows)
 
 
-def write_report(out: Path, args: argparse.Namespace, results: dict[str, Any], seconds: float) -> Path:
+def write_report(out: Path, args: argparse.Namespace, results: dict[str, Any], seconds: float | None) -> Path:
     text = [
         "# Publication study",
         "",
-        (f"Held-out maps: seeds {args.base_seed}–{args.base_seed + args.runs - 1} (calibration used seeds 0–39). "
+        (f"Terrain: {_map_text(args)}. "
+        f"Held-out maps: seeds {args.base_seed}–{args.base_seed + args.runs - 1} (the parameters were tuned on seeds 0–99, `uv run tune`). "
         f"Frozen default parameters. {args.runs} simulations per condition and test; sensitivity uses "
-        f"the first {args.sens_runs} seeds. Brackets: 95% Wilson interval. Paired tests by seed, "
+        f"the first {args.sens_runs} seeds. Brackets: 95% interval (Wilson; bootstrap over simulations for several rovers). Paired tests by seed, "
         "Holm-corrected within each table. Survival and route completion are per rover."),
         "",
-        f"Total simulations: {results['simulations']}, run time {seconds / 60:.1f} min.",
+        f"Total simulations: {results['simulations']}"
+        + (f", run time {seconds / 60:.1f} min." if seconds is not None else "."),
         "",
     ]
     if "swarm" in results:
         rates, tests = results["swarm"]
         text += ["## 1. Swarm controls", "",
-                 "Which part of the swarm helps: more rovers, a shared map of visited cells, or shared fear?", ""]
+                 ("Plain, anxious and fuzzy rovers, and which part of the swarm helps: more rovers, "
+                 "a shared map, or shared fear?"), ""]
         text.append(_table(
             ["Test", "Condition", "Rover survival", "Route completed", "Terrain discovered [%]"],
             [[TESTS[r.test], r.condition, _pct(r.survival_rate, r.survival_ci_low, r.survival_ci_high),
@@ -348,7 +365,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--parts", nargs="+", default=["swarm", "ablation", "sensitivity", "noise"],
                         choices=["swarm", "ablation", "sensitivity", "noise"])
     parser.add_argument("--max-steps", type=int, default=500)
+    parser.add_argument("--map", dest="map_source", default=SimulationConfig().map_source,
+                        choices=MAP_SOURCES,
+                        help="Terrain: mars (Jezero crater) or atacama (Atacama Desert). "
+                        "The seed picks the part of the map.")
+    parser.add_argument("--cell-m", type=float, default=None,
+                        help="Size of one hex cell in metres (default: 50 mars, 20 atacama).")
     parser.add_argument("--output", type=Path, default=Path("results") / "study")
+    parser.add_argument("--report-only", action="store_true",
+                        help="Rebuild tables, figures and the report from the saved episodes.csv (no simulations).")
     return parser
 
 
@@ -357,22 +382,32 @@ def main(argv: list[str] | None = None) -> int:
         if stream is not None and hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
     args = build_parser().parse_args(argv)
-    base = SimulationConfig(max_steps=args.max_steps, exploration_budget=args.max_steps)
-    tasks = build_tasks(args, base)
-    print(f"Running {len(tasks)} simulations on held-out seeds {args.base_seed}+ ...")
-    start = time.perf_counter()
-    with ProcessPoolExecutor(max_workers=max(1, args.workers)) as executor:
-        episodes = []
-        for index, episode in enumerate(executor.map(_task, tasks, chunksize=8), 1):
-            episodes.append(episode)
-            if index % 200 == 0 or index == len(tasks):
-                print(f"  {index}/{len(tasks)}  ({(time.perf_counter() - start) / 60:.1f} min)", flush=True)
-    seconds = time.perf_counter() - start
-    frame = pd.DataFrame(episodes)
-
     out = args.output
     (out / "plots").mkdir(parents=True, exist_ok=True)
-    frame.to_csv(out / "episodes.csv", index=False, float_format="%.6g")
+    if args.report_only:
+        frame = pd.read_csv(out / "episodes.csv")
+        seconds = None
+    else:
+        base = SimulationConfig(
+            max_steps=args.max_steps,
+            exploration_budget=args.max_steps,
+            map_source=args.map_source,
+            cell_m=args.cell_m,
+        )
+        tasks = build_tasks(args, base)
+        print(f"Running {len(tasks)} simulations on held-out seeds {args.base_seed}+ ...")
+        start = time.perf_counter()
+        with ProcessPoolExecutor(max_workers=max(1, args.workers)) as executor:
+            episodes = []
+            for index, episode in enumerate(executor.map(_task, tasks, chunksize=8), 1):
+                episodes.append(episode)
+                if index % 200 == 0 or index == len(tasks):
+                    print(f"  {index}/{len(tasks)}  ({(time.perf_counter() - start) / 60:.1f} min)", flush=True)
+        seconds = time.perf_counter() - start
+        frame = pd.DataFrame(episodes)
+        # Saved before the tables and figures, so a failure there loses nothing
+        # (rebuild with --report-only).
+        frame.to_csv(out / "episodes.csv", index=False, float_format="%.6g")
 
     from src.analytics import study_plots
 

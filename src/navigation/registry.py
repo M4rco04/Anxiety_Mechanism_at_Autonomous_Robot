@@ -25,9 +25,9 @@ def create_strategy(
         raise ValueError(f"Unknown navigation mode: {navigation_mode!r}")
     if not getattr(strategy_class, "IMPLEMENTED", False):
         raise NotImplementedError(
-            f"TODO(Karol): navigation mode {navigation_mode!r} is not "
-            "implemented yet. Use navigation_mode='scaffold' only for smoke "
-            "tests; do not report its results as scientific evidence."
+            f"Navigation mode {navigation_mode!r} is not implemented yet. "
+            "Use navigation_mode='scaffold' only for smoke tests; do not "
+            "report its results as scientific evidence."
         )
     return strategy_class(config, seed)  # type: ignore[return-value]
 

@@ -278,6 +278,34 @@ def wilson_interval(successes: int, total: int, z: float = 1.96) -> tuple[float,
     return (max(0.0, centre - margin), min(1.0, centre + margin))
 
 
+def rate_interval(
+    successes: Sequence[int], sizes: Sequence[int], reps: int = 2000
+) -> tuple[float, float]:
+    """95% interval of a per-rover rate over many runs.
+
+    ``successes[i]`` of ``sizes[i]`` rovers succeeded in run ``i``. With one
+    rover per run this is the Wilson interval. Rovers of one run share a map
+    and are not independent, so with several rovers per run whole runs are
+    resampled instead (cluster bootstrap, percentile interval).
+    """
+
+    hits = np.asarray(successes, dtype=float)
+    counts = np.asarray(sizes, dtype=float)
+    if len(counts) == 0 or counts.sum() <= 0:
+        return (0.0, 1.0)
+    if np.all(counts == 1):
+        low, high = wilson_interval(int(hits.sum()), int(counts.sum()))
+    else:
+        rng = np.random.default_rng(0)
+        index = rng.integers(0, len(counts), size=(reps, len(counts)))
+        rates = hits[index].sum(axis=1) / counts[index].sum(axis=1)
+        low, high = np.quantile(rates, [0.025, 0.975])
+    # The interval always contains the observed rate (also at 0% and 100%,
+    # and against rounding), so error bars are never negative.
+    rate = float(hits.sum() / counts.sum())
+    return (min(float(low), rate), max(float(high), rate))
+
+
 def summarize_episodes(episodes: pd.DataFrame) -> pd.DataFrame:
     if episodes.empty:
         return pd.DataFrame()
@@ -433,6 +461,7 @@ __all__ = [
     "BenchmarkManager",
     "ExperimentSpec",
     "paired_comparisons",
+    "rate_interval",
     "run_episode",
     "summarize_episodes",
     "wilson_interval",

@@ -33,7 +33,9 @@ def _overturned_rover(**overrides):
 
 
 def test_rover_recovers_after_overturn_and_imprints_fear():
-    model, rover = _overturned_rover(overturn_recovery_steps=3)
+    model, rover = _overturned_rover(
+        overturn_recovery_steps=3, overturn_recovery_probability=1.0
+    )
     position = rover.pos
     assert rover.mission_status == "recovering"
     assert rover.is_active
@@ -57,3 +59,33 @@ def test_zero_recovery_steps_keeps_overturn_terminal():
     rover.step()
     assert rover.pos == position
     assert rover.is_overturned
+
+
+def test_failed_recovery_breaks_the_rover():
+    _, rover = _overturned_rover(overturn_recovery_steps=3, overturn_recovery_probability=0.0)
+    assert rover.mission_status == "overturned"
+    assert not rover.is_active
+    position = rover.pos
+    rover.step()
+    assert rover.pos == position
+    assert rover.recoveries == 0
+
+
+def test_recovery_probability_is_respected():
+    recovered = overturned = 0
+    for seed in range(300):
+        model = make_model(
+            width=6,
+            height=6,
+            terrain_layout=layout(6, 6, terrain="SteepSlope", slope=80.0),
+            num_rovers=0,
+            seed=seed,
+        )
+        rover = add_rover(model, (2, 2), navigation_mode="emotional", strategy=FirstMove())
+        rover.step()
+        if not rover.is_overturned:
+            continue
+        overturned += 1
+        recovered += rover.recovery_steps_left > 0
+    assert overturned > 100
+    assert 0.6 < recovered / overturned < 0.8

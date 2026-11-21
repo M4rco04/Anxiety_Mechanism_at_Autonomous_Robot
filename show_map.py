@@ -1,8 +1,8 @@
 import sys
 
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
 import matplotlib.colors as mcolors
+import matplotlib.patches as mpatches
+import matplotlib.pyplot as plt
 import numpy as np
 
 # Konsola Windows domyślnie używa cp1252 - polskie znaki w print() wywalają UnicodeEncodeError.
@@ -11,14 +11,28 @@ for _stream in (sys.stdout, sys.stderr):
         _stream.reconfigure(encoding="utf-8", errors="replace")
 
 # Importujemy nasz model
-from src.model.model import MarsSimulation
 from src.environment.terrain import TerrainPatch
+from src.model.model import MarsSimulation
 
-def visualize_map():
-    width, height = 50, 50
 
-    print("Generowanie świata za pomocą szumu Perlina. Proszę czekać...")
-    model = MarsSimulation(width=width, height=height, num_rovers=0)
+def visualize_map(argv=None):
+    import argparse
+
+    from config.config import MAP_SOURCES, SimulationConfig
+
+    parser = argparse.ArgumentParser(description="Podgląd mapy terenu.")
+    parser.add_argument("--map", dest="map_source", default=SimulationConfig().map_source,
+                        choices=MAP_SOURCES, help="mars (krater Jezero) lub atacama (pustynia Atakama).")
+    parser.add_argument("--seed", type=int, default=0, help="Seed = wycinek prawdziwej mapy.")
+    parser.add_argument("--width", type=int, default=50)
+    parser.add_argument("--height", type=int, default=50)
+    args = parser.parse_args(argv)
+    width, height = args.width, args.height
+
+    print(f"Generowanie terenu ({args.map_source}, seed {args.seed}). Proszę czekać...")
+    model = MarsSimulation(width=width, height=height, num_rovers=0,
+                           map_source=args.map_source, seed=args.seed)
+    print("Wycinek mapy:", model.map_info)
 
     # Przygotowanie danych na dwa wykresy
     image_data = np.zeros((height, width, 3)) # Kolory kategorii
@@ -52,7 +66,7 @@ def visualize_map():
     # PANEL 1: KATEGORIE TERENU (Lewa strona)
     # ==========================================
     ax1.imshow(image_data, origin='lower')
-    ax1.set_title("Mapa Zagrożeń (Typy terenu)")
+    ax1.set_title(f"Mapa zagrożeń: {args.map_source}, seed {args.seed}")
     ax1.set_xlabel("Oś X")
     ax1.set_ylabel("Oś Y")
 

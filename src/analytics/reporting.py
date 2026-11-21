@@ -86,7 +86,7 @@ def write_report(
         "## Method",
         "",
         (
-            "The rover is a grid abstraction of the Pioneer 3-DX platform. "
+            "The rover is a grid abstraction of the Pioneer P3-AT platform (traction after Wang et al. 2015) on windows of a real map. "
             "Each rover tracks battery, wheel and hull condition, speed, exposure "
             "to shadows/dust and a homeostat stress level. A one-act imprint occurs "
             "when the instantaneous stress reaches `S_crit` or the slip alarm "

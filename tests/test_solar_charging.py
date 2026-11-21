@@ -74,7 +74,7 @@ def test_low_battery_rover_heads_to_nearest_safe_cell():
     model = make_model(width=8, height=8, terrain_layout=terrain, num_rovers=0, seed=4)
     strategy = create_strategy("online", model.config)
     rover = add_rover(model, (3, 3), navigation_mode="online", strategy=strategy)
-    rover.heading = (1, 0)
+    rover._face(rover.pos, (5, 3))  # cameras look east
     rover.battery = 25.0
 
     for _ in range(4):

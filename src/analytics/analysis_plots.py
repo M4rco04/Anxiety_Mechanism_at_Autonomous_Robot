@@ -30,7 +30,7 @@ TEXT = "#f5f0e8"
 TEXT_MUTED = "#b8c0cc"
 GRID = "#2a303a"
 
-VARIANT_COLORS = ["#3987e5", "#d95926", "#199e70"]  # fixed order, never cycled
+VARIANT_COLORS = ["#3987e5", "#d95926", "#199e70", "#9a6fd1"]  # fixed order, never cycled
 STRESS_CMAP = mcolors.LinearSegmentedColormap.from_list(
     "stress", ["#2a1a12", "#7a3415", "#d95926", "#f5a06e", "#fde3cf"]
 )
@@ -107,7 +107,7 @@ def plot_rates(summary: pd.DataFrame, output_dir: Path, tests: Mapping[str, str]
         )
         axis.set_title(tests[test])
     axes[0][0].set_ylabel("Rovers that survived [%]")
-    fig.suptitle("Rover survival (95% Wilson CI)", x=0.01, ha="left", fontsize=11)
+    fig.suptitle("Rover survival (95% CI)", x=0.01, ha="left", fontsize=11)
     paths.append(_save(fig, output_dir / "plots" / "survival.png"))
 
     if "goal_navigation" in present:
@@ -121,7 +121,7 @@ def plot_rates(summary: pd.DataFrame, output_dir: Path, tests: Mapping[str, str]
             list(rows["route_completed_ci_high"]),
         )
         axis.set_ylabel("Rovers that completed the route [%]")
-        axis.set_title("Goal navigation: route completed (95% Wilson CI)", loc="left")
+        axis.set_title("Goal navigation: route completed (95% CI)", loc="left")
         paths.append(_save(fig, output_dir / "plots" / "goal_completion.png"))
     return paths
 

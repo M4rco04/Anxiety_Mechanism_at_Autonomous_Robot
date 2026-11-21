@@ -15,13 +15,13 @@ import numpy as np
 from config.config import DEFAULT_CONFIG, SimulationConfig
 from src.agents.rover import Pioneer3DXAgent
 from src.communication.swarm import SwarmBroadcaster
-from src.environment.generator import MarsMapGenerator
+from src.environment.real_maps import RealMapGenerator
 from src.environment.terrain import (
     SafeRegolith,
     TerrainPatch,
     TerrainType,
 )
-from src.model.types import Position, hex_distance
+from src.model.types import Position, hex_distance, squeezed
 from src.navigation.registry import create_strategy
 
 HAZARDOUS_TERRAIN = {
@@ -57,6 +57,9 @@ class MarsSimulation(mesa.Model):
         )
         self.reset_randomizer(self.seed)
         self.rng = np.random.default_rng(self.seed)
+        # Camera noise has its own stream, so the noise level does not shift
+        # the random outcomes of the terrain.
+        self.sensor_rng = np.random.default_rng([self.seed, 1])
         self.num_rovers = int(self.config.num_rovers)
 
         # HexMultiGrid, not HexGrid: terrain patch and rover share a cell.
@@ -74,6 +77,9 @@ class MarsSimulation(mesa.Model):
         self.radio_packets_received = 0
         self.termination_reason: str | None = None
         self.step_count = 0
+        # Size of one hex cell [m] and where the terrain comes from.
+        self.cell_m = self.config.resolved_cell_m
+        self.map_info: dict[str, Any] = {"map": "layout", "cell_m": self.cell_m}
 
         self._setup_terrain(terrain_layout)
         self.traversable_cells = frozenset(
@@ -81,6 +87,20 @@ class MarsSimulation(mesa.Model):
             for position, terrain in self._terrain_by_pos.items()
             if terrain.traversable
         )
+        # Cells whose sunlight a nearby dust storm blocks (slower charging).
+        radius = int(self.config.dust_shading_radius)
+        storms = [
+            position
+            for position, terrain in self._terrain_by_pos.items()
+            if terrain.terrain_type == TerrainType.DUST_STORM
+        ]
+        shaded: set[Position] = set(storms)
+        if radius > 0:
+            for position in storms:
+                shaded.update(
+                    self.grid.get_neighborhood(position, include_center=True, radius=radius)
+                )
+        self.dust_shaded_cells = frozenset(shaded)
 
         self.swarm = SwarmBroadcaster(
             self,
@@ -100,13 +120,20 @@ class MarsSimulation(mesa.Model):
         self, terrain_layout: Mapping[Position, Any] | None
     ) -> None:
         if terrain_layout is None:
-            generator = MarsMapGenerator(
-                self.config.width, self.config.height, seed=self.seed
+            real = RealMapGenerator(
+                self.config.map_source,
+                self.config.width,
+                self.config.height,
+                self.seed,
+                cell_m=self.cell_m,
+                origin_m=self.config.real_map_origin_m,
+                overlays=self.config.real_map_overlays,
+                relief=self.config.real_map_relief,
             )
-            elevation, slope = generator.generate_topography()
             layout: Iterable[tuple[Position, TerrainPatch]] = (
-                generator.assign_terrain_classes(self, elevation, slope)
+                real.assign_terrain_classes(self)
             )
+            self.map_info = real.info()
             for position, patch in layout:
                 self.grid.place_agent(patch, position)
                 self._terrain_by_pos[position] = patch
@@ -153,6 +180,11 @@ class MarsSimulation(mesa.Model):
             in {TerrainType.SAFE_REGOLITH, TerrainType.LOOSE_SAND}
         )
         fallback = sorted(self.traversable_cells)
+        # Start only in the largest connected drivable area: a pocket closed
+        # off by boulders (or gaps between them) has nowhere to go.
+        area = self._main_area()
+        safe = [position for position in safe if position in area]
+        fallback = [position for position in fallback if position in area] or fallback
         candidates = safe if self.config.spawn_on_safe and safe else fallback
         if not candidates:
             raise ValueError("The generated map has no traversable spawn cells")
@@ -230,6 +262,12 @@ class MarsSimulation(mesa.Model):
         """
 
         parents = self._bfs_tree(start)
+        # Cells reachable without crossing hazardous terrain: a detour exists.
+        detours = (
+            self._bfs_tree(start, avoid=HAZARDOUS_TERRAIN)
+            if self.config.goal_requires_detour
+            else None
+        )
         reachable = set(parents) - {start}
         if not reachable:
             raise ValueError(f"No reachable target from {start}")
@@ -242,11 +280,23 @@ class MarsSimulation(mesa.Model):
                 return 0
             return 0 if self._route_hazards(parents, cell) >= min_hazard else 1
 
+        def unsafe_goal(cell: Position) -> bool:
+            # The goal is a place to stop at (a science target), so it lies on
+            # safe ground; the danger is on the way. On the real maps large
+            # areas are hazardous, and a goal inside one could not be reached
+            # without damage by any rover.
+            if not self.config.goal_on_safe_ground:
+                return False
+            terrain = self.terrain_at(cell)
+            return terrain is None or terrain.terrain_type != TerrainType.SAFE_REGOLITH
+
         ordered = sorted(
             reachable,
             key=lambda cell: (
                 abs(hex_distance(start, cell) - desired) > 3,
+                unsafe_goal(cell),
                 hazard_rank(cell),
+                detours is not None and cell not in detours,
                 abs(hex_distance(start, cell) - desired),
                 -hex_distance(start, cell),
                 cell,
@@ -254,8 +304,14 @@ class MarsSimulation(mesa.Model):
         )
         return next((cell for cell in ordered if cell not in used), ordered[0])
 
-    def _bfs_tree(self, start: Position) -> dict[Position, Position | None]:
-        """Shortest-path tree over traversable cells: cell -> parent."""
+    def _bfs_tree(
+        self, start: Position, avoid: Iterable[TerrainType] = ()
+    ) -> dict[Position, Position | None]:
+        """Shortest-path tree over traversable cells: cell -> parent.
+
+        Cells of the ``avoid`` terrain types are not entered.
+        """
+        avoid = set(avoid)
 
         if not self.is_in_bounds(start):
             return {}
@@ -270,6 +326,10 @@ class MarsSimulation(mesa.Model):
                     continue
                 terrain = self.terrain_at(neighbour)
                 if terrain is None or not terrain.traversable:
+                    continue
+                if squeezed(position, neighbour, self.is_boulder):
+                    continue
+                if terrain.terrain_type in avoid:
                     continue
                 parents[neighbour] = position
                 queue.append(neighbour)
@@ -290,9 +350,36 @@ class MarsSimulation(mesa.Model):
     # ------------------------------------------------------------------
     # Queries
     # ------------------------------------------------------------------
+    def _main_area(self) -> set[Position]:
+        """Largest set of traversable cells connected by possible moves."""
+
+        best: set[Position] = set()
+        seen: set[Position] = set()
+        for start in sorted(self.traversable_cells):
+            if start in seen:
+                continue
+            area = set(self._bfs_tree(start))
+            seen |= area
+            if len(area) > len(best):
+                best = area
+        return best
+
+    def is_boulder(self, position: Position) -> bool:
+        """True for a non-traversable cell inside the map (boulders)."""
+
+        if not self.is_in_bounds(position):
+            return False
+        terrain = self.terrain_at(position)
+        return terrain is not None and not terrain.traversable
+
     def is_in_bounds(self, position: Position) -> bool:
         x, y = position
         return 0 <= x < self.grid.width and 0 <= y < self.grid.height
+
+    def dust_shaded(self, position: Position) -> bool:
+        """True when a dust storm blocks the sunlight at ``position``."""
+
+        return tuple(position) in self.dust_shaded_cells
 
     def terrain_at(self, position: Position) -> TerrainPatch | None:
         return self._terrain_by_pos.get(tuple(position))
@@ -379,10 +466,9 @@ class MarsSimulation(mesa.Model):
                 rover.mission_status = "active"
                 rover.status_reason = "next waypoint"
                 rover._goal_event_sent = False
-                if rover.strategy is not None and hasattr(rover.strategy, "h_cost"):
-                    rover.strategy.h_cost.clear()
-                    if hasattr(rover.strategy, "_crossing"):
-                        rover.strategy._crossing = False
+                reset = getattr(rover.strategy, "reset_for_new_goal", None)
+                if reset is not None:
+                    reset()
                 continue
             if (
                 rover.mission_status == "no_path"
